@@ -1,0 +1,454 @@
+// Generates grass blades for a single tile and routes them into per-LOD append
+// buffers. Run one Dispatch per visible tile per frame from C#.
+
+#pragma kernel CSGenerate
+#pragma kernel CSBuildArgs
+
+#include "GrassCommon.hlsl"
+
+// ---- IO ---------------------------------------------------------------------
+
+AppendStructuredBuffer<GrassBlade> _BladesHigh;
+AppendStructuredBuffer<GrassBlade> _BladesLow;
+
+// Indirect args layout for Graphics.RenderMeshIndirect — 5 uints per command
+// (stride 20 bytes). Bind via RWStructuredBuffer<IndirectArgs> so the stride
+// matches the GraphicsBuffer that owns it.
+struct IndirectArgs
+{
+    uint indexCountPerInstance;
+    uint instanceCount;
+    uint startIndex;
+    uint baseVertex;
+    uint startInstance;
+};
+RWStructuredBuffer<IndirectArgs> _IndirectArgsHigh;
+RWStructuredBuffer<IndirectArgs> _IndirectArgsLow;
+
+// Counters from AppendStructuredBuffer.CopyCount.
+StructuredBuffer<uint> _CountHigh;
+StructuredBuffer<uint> _CountLow;
+
+uint _IndexCountHigh;
+uint _IndexCountLow;
+
+// ---- Sources ----------------------------------------------------------------
+
+Texture2D<float>  _TerrainHeightmap;       // R = normalized height
+Texture2D<float4> _GrassMask;              // R = placement, G = height mul, B = density mul, A = reserved
+Texture2D<float4> _ClumpNoise;             // RGBA = noise channels
+// sampler_<TextureName> follows the texture's import settings.
+// sampler_LinearRepeat is a Unity-provided inline sampler with fixed
+// Linear/Repeat — used for the tileable clump noise regardless of how the
+// asset was imported.
+SamplerState sampler_TerrainHeightmap;
+SamplerState sampler_GrassMask;
+SamplerState sampler_LinearRepeat;
+
+// Single grass type for the whole terrain.
+StructuredBuffer<GrassTypeParams> _GrassType;
+
+// ---- Per-dispatch params ----------------------------------------------------
+//
+// File-scope uniforms (no URP CBUFFER_START macro here — this is a compute
+// shader; it does not include URP's Core.hlsl). ComputeShader.SetVector /
+// SetInts in C# bind directly to these.
+
+float4 _TileOriginSize;          // xy = tile origin in world XZ, zw = tile size in world XZ
+uint4  _GridSizeCounts;          // xy = grass cells per axis in this tile, zw = pad
+float4 _TerrainOrigin;           // xyz = origin, w = unused
+float4 _TerrainSize;             // xyz = size, w = unused
+float4 _CullParams;              // x = maxDistanceSq, y = highLodDistance, z = lodBlendBand, w = clumpScale
+float4 _CameraPos;               // xyz = world camera, w = time
+uint   _DisableFrustumCull;      // 1 = generate blades regardless of frustum (edit mode); 0 = standard frustum cull
+float4 _ThinningParams;          // x = thinning start distance, y = thinning strength (0..1), zw = unused
+
+// ---- Wind -------------------------------------------------------------------
+//
+// Wind is sampled ONCE PER BLADE here instead of per-vertex in the render
+// shader (the noise UVs only depend on the blade root + time, so every vertex
+// of a blade would otherwise recompute an identical value). The v-independent
+// "base magnitude" is stored on GrassBlade.windBase; the vertex stage just
+// scales it by v*v (see GrassWind.hlsl / ApplyGrassWind).
+//
+// LOD-aware: high-LOD blades get the full two-octave gust; low-LOD blades get
+// a single cheap octave — so the bulk of (distant) low-LOD blades cost one
+// texture fetch instead of two.
+Texture2D<float4> _GrassWindNoise;
+float4 _GrassWindParams;         // x = strength, y = frequency, z = scrollSpeed, w = gustSpeed
+float4 _GrassWindDirection;      // xz = direction (unit), w = time
+uint   _GrassWindEnabled;        // 1 = a GrassWind component is driving wind; 0 = no wind
+
+// ---- Helpers ----------------------------------------------------------------
+
+// Unity stores terrain heightmap pixels as `worldHeight / (size.y * 2)` — the
+// factor of 2 is for half-precision encoding. The "* 2.0" here is mandatory;
+// without it grass sits at half elevation and disappears under raised terrain.
+float SampleTerrainHeight(float2 worldXZ)
+{
+    float2 uv = (worldXZ - _TerrainOrigin.xz) / _TerrainSize.xz;
+    if (any(uv < 0.0) || any(uv > 1.0)) return -1e9;
+    float h = _TerrainHeightmap.SampleLevel(sampler_TerrainHeightmap, uv, 0).r;
+    return _TerrainOrigin.y + h * _TerrainSize.y * 2.0;
+}
+
+// Same sampling but with clamped UVs — used by the normal computation so we
+// can take samples right at the terrain edge without bailing.
+float SampleTerrainHeightClamped(float2 worldXZ)
+{
+    float2 uv = saturate((worldXZ - _TerrainOrigin.xz) / _TerrainSize.xz);
+    float h = _TerrainHeightmap.SampleLevel(sampler_TerrainHeightmap, uv, 0).r;
+    return _TerrainOrigin.y + h * _TerrainSize.y * 2.0;
+}
+
+// Finite-difference terrain normal at world-space XZ. Samples 4 neighbours at
+// distance `d` meters and forms the surface normal from the partial slopes.
+float3 SampleTerrainNormal(float2 worldXZ, float d)
+{
+    float hxp = SampleTerrainHeightClamped(worldXZ + float2( d, 0.0));
+    float hxm = SampleTerrainHeightClamped(worldXZ + float2(-d, 0.0));
+    float hzp = SampleTerrainHeightClamped(worldXZ + float2(0.0,  d));
+    float hzm = SampleTerrainHeightClamped(worldXZ + float2(0.0, -d));
+    float dhdx = (hxp - hxm) / (2.0 * d);
+    float dhdz = (hzp - hzm) / (2.0 * d);
+    return normalize(float3(-dhdx, 1.0, -dhdz));
+}
+
+float4 SampleGrassMask(float2 worldXZ)
+{
+    float2 uv = (worldXZ - _TerrainOrigin.xz) / _TerrainSize.xz;
+    return _GrassMask.SampleLevel(sampler_GrassMask, uv, 0);
+}
+
+// Per-blade wind base magnitude (v-independent). needHigh/needLow gate which
+// outputs are produced so a blade that only routes to the low-LOD buffer pays
+// for a single octave (1 fetch) instead of two.
+void ComputeWindBases(float2 worldXZ, uint bladeHash, bool needHigh, bool needLow,
+                      out float windHigh, out float windLow)
+{
+    windHigh = 0.0;
+    windLow  = 0.0;
+    if (_GrassWindEnabled == 0u || (!needHigh && !needLow)) return;
+
+    float  t        = _GrassWindDirection.w;
+    float2 dir      = _GrassWindDirection.xz;
+    float  strength = _GrassWindParams.x;
+    float  freq     = _GrassWindParams.y;
+
+    // Primary octave — shared by both LODs.
+    // Subtract the scroll offset so the gust PATTERN travels along +dir over
+    // time (sampling at -dir*t makes a noise feature move toward +dir in world
+    // space). This matches the blade lean, which is also along +dir — otherwise
+    // the grass leans against the visible direction the noise moves.
+    float2 uv0 = worldXZ * freq - dir * t * _GrassWindParams.z;
+    float  n0  = _GrassWindNoise.SampleLevel(sampler_LinearRepeat, uv0, 0).r;
+
+    // Per-blade phase decorrelates neighbouring blades a touch.
+    float phase  = (bladeHash & 0xFFu) * (1.0 / 255.0);
+    float wave   = sin(t * 6.2831853 * 0.5 + phase * 6.2831853);
+    float common = strength * (0.5 + 0.5 * wave);
+
+    if (needLow)
+        windLow = common * saturate(n0);
+
+    // Secondary octave — high LOD only.
+    if (needHigh)
+    {
+        float2 uv1 = worldXZ * (freq * 0.37) - dir * t * _GrassWindParams.w;
+        float  n1  = _GrassWindNoise.SampleLevel(sampler_LinearRepeat, uv1, 0).g;
+        windHigh = common * saturate(n0 * 0.7 + n1 * 0.5);
+    }
+}
+
+// ---- Kernels ----------------------------------------------------------------
+
+[numthreads(8, 8, 1)]
+void CSGenerate(uint3 id : SV_DispatchThreadID)
+{
+    uint2 gridSize = _GridSizeCounts.xy;
+    if (id.x >= gridSize.x || id.y >= gridSize.y) return;
+
+    // Stable per-cell hash so blade placement is deterministic across frames.
+    uint hash = Hash2(id.xy + uint2(_TileOriginSize.xy * 31.0));
+
+    // Jitter sample inside the cell to break the lattice. Amplitude > 1 lets
+    // blades spill across cell boundaries, which is necessary to hide the row
+    // pattern of the underlying grid. We also rotate the jitter per-cell so
+    // displacements are not axis-aligned. Total area each blade can reach is a
+    // disk of radius ~0.75 cell widths; neighbours overlap freely.
+    float2 j     = HashToFloat2(hash) - 0.5;
+    float  ang   = HashToFloat(WangHash(hash ^ 0x9E3779B9u)) * 6.2831853;
+    float  ca    = cos(ang), sa = sin(ang);
+    float2 jrot  = float2(j.x * ca - j.y * sa, j.x * sa + j.y * ca);
+    float2 cellUV = (float2(id.xy) + 0.5 + jrot * 1.5) / float2(gridSize);
+
+    float2 worldXZ = _TileOriginSize.xy + cellUV * _TileOriginSize.zw;
+
+    // Terrain height + bail if blade falls off the heightmap.
+    float worldY = SampleTerrainHeight(worldXZ);
+    if (worldY < -1e8) return;
+
+    // Surface normal at the blade root, blended toward world-up by the
+    // GrassType's slopeFollow (0 = always vertical, 1 = perpendicular to
+    // terrain). Computed once per blade and stored on the struct so the
+    // render shader doesn't need terrain access.
+    float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
+    // slopeFollow ramped after we sample gt below.
+
+    // Mask channels:
+    //   R = placement / density gate (0..1). Drives whether grass exists in
+    //       this cell. With default mask only R is required to paint grass.
+    //   G = height multiplier (0..1) — dedicated per-area blade height.
+    //   B = clamp / tuft intensity (0..1). OPT-IN. Where painted, sprouts
+    //       extra blades from the same root (tufts) and adds small height /
+    //       brightness boosts. Does NOT contribute to density — areas where
+    //       B=0 still get dense single-blade grass.
+    //   A = reserved
+    float4 mask = SampleGrassMask(worldXZ);
+    float placement = mask.r;
+    float heightMul = mask.g;
+    float lushness  = mask.b;
+
+    // Hard gate — anywhere placement was painted to ~0 has no grass at all.
+    if (placement < 0.01) return;
+
+    GrassTypeParams gt = _GrassType[0];
+
+    // Now blend the terrain normal with world-up using the type's setting.
+    float3 bladeUp = normalize(lerp(float3(0.0, 1.0, 0.0), terrainN, saturate(gt.slopeFollow)));
+
+    // Density: only the placement channel and the GrassType's own multiplier.
+    // B is intentionally absent — it would otherwise tie tufting (Clamp tool)
+    // to density, and a freshly-painted area would be sparse until you also
+    // painted B.
+    float densityProb = placement * gt.densityMultiplier;
+    if (HashToFloat(hash ^ 0xA53Bu) > densityProb) return;
+
+    // Clumping noise: drives height, color, and direction in a coherent way.
+    float clumpScale = _CullParams.w;
+    float2 noiseUV = worldXZ * clumpScale;
+    float4 clump = _ClumpNoise.SampleLevel(sampler_LinearRepeat, noiseUV, 0);
+
+    float heightSignal = clump.r * 2.0 - 1.0;
+    float colorSignal  = clump.g;
+    // Facing angle = blend(noise direction, per-blade random direction)
+    //              + bounded per-blade jitter.
+    //
+    // facingRandomness (0..1) controls how much the noise-driven direction is
+    // replaced by an independent uniform random angle per blade. 0 keeps the
+    // clump pattern; 1 ignores the noise entirely.
+    //
+    // facingVariance is the small bounded jitter added on top of whichever
+    // base direction we picked — useful even when randomness > 0 to avoid the
+    // few blades that happen to share the same random angle from aligning.
+    float dirNoise     = clump.b * 6.2831853;
+    float dirRandom    = HashToFloat(hash ^ 0xD9u) * 6.2831853;
+    float dirBase      = lerp(dirNoise, dirRandom, saturate(gt.facingRandomness));
+    float dirJitter    = (HashToFloat(hash ^ 0xC5u) - 0.5) * 2.0 * gt.facingVariance;
+    float dirSignal    = dirBase + dirJitter;
+
+    // baseHeight + noise patch variation + per-blade independent random jitter.
+    // heightVariance follows the clump noise (neighbours move together);
+    // heightRandomness is rolled per blade (independent neighbours).
+    // mask.g (heightMul) is the dedicated per-area height scale.
+    // mask.b (lushness) adds a small extra height boost so packed patches read
+    // as taller / fuller than sparse ones — caps at +25% at full lushness.
+    float heightJitter = (HashToFloat(hash ^ 0xE7u) - 0.5) * 2.0 * gt.heightRandomness;
+    float lushHeightBoost = 1.0 + lushness * 0.25;
+    float bladeHeight  = max(0.05, (gt.baseHeight + heightSignal * gt.heightVariance + heightJitter) * heightMul * lushHeightBoost);
+    float bladeWidth  = max(0.005, gt.baseWidth + (HashToFloat(hash ^ 0x55u) - 0.5) * 2.0 * gt.widthVariance);
+    float bladeTilt   = gt.baseTilt + (HashToFloat(hash ^ 0x71u) - 0.5) * 2.0 * gt.tiltVariance;
+    float bladeBend   = gt.bend;
+
+    float3 worldPos = float3(worldXZ.x, worldY, worldXZ.y);
+
+    // Frustum + distance cull on a bounding sphere around the blade.
+    float bladeRadius = max(bladeHeight, bladeWidth) * 0.6 + 0.05;
+    float3 bladeCenter = worldPos + float3(0.0, bladeHeight * 0.5, 0.0);
+
+    if (_DisableFrustumCull == 0u && !SphereInFrustum(bladeCenter, bladeRadius)) return;
+
+    float3 toCam = bladeCenter - _CameraPos.xyz;
+    float distSq = dot(toCam, toCam);
+    float maxDistSq = _CullParams.x;
+    if (distSq > maxDistSq) return;
+
+    float dist = sqrt(distSq);
+    float highCutoff = _CullParams.y;
+    float blendBand  = max(0.001, _CullParams.z);
+    float halfBand   = blendBand * 0.5;
+    float maxDist    = sqrt(maxDistSq);
+
+    // Distance thinning. Beyond _ThinningParams.x the keep-probability ramps
+    // down toward the horizon, so low-LOD grass gets sparser with distance.
+    // Only the low-LOD appends below are gated by this — high LOD is never
+    // thinned. thinKeep == 1 means "keep all" (no thinning before the start
+    // distance, or strength 0).
+    float thinStart    = _ThinningParams.x;
+    float thinStrength = _ThinningParams.y;
+    float thinT        = saturate((dist - thinStart) / max(0.001, maxDist - thinStart));
+    float thinKeep     = 1.0 - thinStrength * thinT;
+
+    // Lushness also nudges color brightness — capped at +20% at full lushness
+    // so packed patches read as slightly more vibrant than thinned-out ones.
+    float3 bladeColor = lerp(gt.baseColor, gt.tipColor, colorSignal) * (1.0 + lushness * 0.20);
+
+    // Cross-fade band. Blades inside the transition band are appended to BOTH
+    // buckets; per-LOD lodBlend factors sum to ~1 so total visible mass is
+    // preserved. All blades in a tuft share the root's distance, so we
+    // precompute these factors once.
+    bool inHigh = dist <= highCutoff + halfBand;
+    bool inLow  = dist >= highCutoff - halfBand;
+    float highBlend = saturate((highCutoff + halfBand - dist) / blendBand);
+    float lowFadeIn  = saturate((dist - (highCutoff - halfBand)) / blendBand);
+    float lowFadeOut = saturate((maxDist - dist) / blendBand);
+    float lowBlend   = lowFadeIn * lowFadeOut;
+
+    // ---- Per-cell blade count ----------------------------------------------
+    // Baseline is 1-2 blades per cell (50/50) — single isolated blades read
+    // as too thin / lattice-like, so even with no Clamp painting we keep a
+    // natural bit of variation. Lushness (mask.b) ramps the average up to
+    // gt.maxBladesPerCell, producing visible grass tufts where the Clamp
+    // brush is used.
+    //
+    //   B = 0 : avg 1.5 -> 1 or 2 blades per cell
+    //   B = 1 : avg ~maxBladesPerCell -> max-1 or max blades per cell
+    //
+    // Buffer pressure scales linearly with maxBladesPerCell — raise
+    // GrassTerrainSettings.MaxHighLodBlades / MaxLowLodBlades in tandem if
+    // you crank this and see grass dropping out at high lushness.
+    uint  maxBlades   = max(1u, (uint)gt.maxBladesPerCell);
+    float avgBlades   = lerp(1.5, (float)maxBlades, lushness);
+    float bladeJitter = HashToFloat(WangHash(hash ^ 0xBEEFu));
+    uint  totalBlades = (uint)floor(avgBlades + bladeJitter);
+    totalBlades = clamp(totalBlades, 1u, maxBlades);
+
+    // Per-tuft shared "base" width (uses cell hash) — every tuft-blade
+    // starts from this then optionally scales by its own height ratio.
+    float bladeWidthBase = bladeWidth;
+    float invBaseHeight  = 1.0 / max(0.01, gt.baseHeight);
+    float widthCoupling  = saturate(gt.widthHeightCoupling);
+
+    GrassBlade b;
+    b.bend      = bladeBend;
+    b.color     = bladeColor;
+    b.width     = bladeWidthBase;  // overwritten per-blade inside the loop
+
+    // Folded short-blade optimization. When a blade's height drops below
+    // gt.foldHeight, we flag it as folded — the shader bends one mesh
+    // instance at v=0.5 into two short sub-blades sharing a root, so a
+    // single draw renders twice the visible mass in short-grass areas.
+    // gt.foldHeight <= 0 disables the optimization for this type.
+    float foldCutoff       = gt.foldHeight;
+    bool  foldingEnabled   = foldCutoff > 1e-4;
+
+    for (uint ti = 0u; ti < totalBlades; ++ti)
+    {
+        // Base blade (ti==0) reuses the cell-rooted values so behaviour at
+        // B=0 is identical to before. Extras re-roll per-blade state from a
+        // derived hash so neighbours-in-a-tuft look different.
+        bool isBase = (ti == 0u);
+        uint  bhash = isBase ? hash : WangHash(hash ^ (0x9E3779B9u + ti * 0xC0FFEEu));
+
+        // Tiny disc offset around the root (~±2 cm) — keeps the look of
+        // blades growing from one point rather than a sparse cluster.
+        float2 off  = isBase ? float2(0.0, 0.0)
+                             : (HashToFloat2(bhash) - 0.5) * 0.04;
+        float3 bpos = worldPos + float3(off.x, 0.0, off.y);
+
+        // Per-blade height / tilt jitter so blades in a tuft are not clones.
+        float bhJit  = isBase ? heightJitter
+                              : (HashToFloat(bhash ^ 0xE7u) - 0.5) * 2.0 * gt.heightRandomness;
+        float bh     = max(0.05, (gt.baseHeight + heightSignal * gt.heightVariance + bhJit) * heightMul * lushHeightBoost);
+        float btilt  = isBase ? bladeTilt
+                              : gt.baseTilt + (HashToFloat(bhash ^ 0x71u) - 0.5) * 2.0 * gt.tiltVariance;
+
+        // Base blade keeps the noise-driven facing. Extras fan out fully
+        // randomly — that's what makes the tuft read as a tuft instead of
+        // a cluster of identical strands.
+        float bdir = isBase
+            ? dirSignal
+            : HashToFloat(bhash ^ 0xD9u) * 6.2831853;
+        float bfx, bfz; sincos(bdir, bfz, bfx);
+
+        // Per-blade fold flag with a small per-blade random offset on the
+        // threshold so the transition is not a hard line in the painted area.
+        float foldJitter = (HashToFloat(bhash ^ 0xF01Du) - 0.5) * 0.1 * foldCutoff;
+        bool  isFolded   = foldingEnabled && (bh < (foldCutoff + foldJitter));
+
+        // Per-blade width: optionally scale shared base by (bh / baseHeight)
+        // so short blades read as proportionally thinner. coupling=0 keeps
+        // legacy behaviour (constant width across the tuft).
+        float heightRatio = bh * invBaseHeight;
+        float widthScale  = lerp(1.0, heightRatio, widthCoupling);
+        float bw          = max(0.005, bladeWidthBase * widthScale);
+
+        b.position  = bpos;
+        b.tiltAngle = btilt;
+        b.height    = bh;
+        b.width     = bw;
+        b.hash      = bhash;
+        b.facing    = float3(bfx, 0.0, bfz);
+        b.typeIndex = isFolded ? 1u : 0u;
+        b.normalUp  = bladeUp;
+        b.windBase  = 0.0;   // set per-LOD just before each Append below
+
+        // Non-folded short blades skip the HighLOD mesh (4 segments, ~7 tris)
+        // and render only on the LowLOD mesh (1 triangle). Folded blades
+        // need the v=0.5 mid-vertex the LowLOD mesh lacks, so they stay
+        // HighLOD regardless. gt.smallBladeHeight == 0 disables the path.
+        bool forceLow = !isFolded && (gt.smallBladeHeight > 0.0) && (bh < gt.smallBladeHeight);
+
+        // Per-blade distance-thinning roll. A blade survives the thinning if its
+        // stable random draw is within the keep-probability for its distance.
+        // Only gates low-LOD appends, so the high LOD stays untouched.
+        bool keepLow = (HashToFloat(bhash ^ 0x7A11u) <= thinKeep);
+
+        // Wind sampled once per blade. needHigh/needLow follow the append
+        // routing below so low-only blades pay for a single octave.
+        float windHigh, windLow;
+        ComputeWindBases(bpos.xz, bhash,
+                         /*needHigh*/ !forceLow && inHigh,
+                         /*needLow*/  keepLow && (forceLow || inLow),
+                         windHigh, windLow);
+
+        if (forceLow)
+        {
+            // Still respect max-distance fade so the simplified blade
+            // disappears at the visibility horizon like everything else.
+            if (keepLow)
+            {
+                b.lodBlend = lowFadeOut;
+                b.windBase = windLow;
+                _BladesLow.Append(b);
+            }
+        }
+        else
+        {
+            if (inHigh)            { b.lodBlend = highBlend; b.windBase = windHigh; _BladesHigh.Append(b); }
+            if (inLow && keepLow)  { b.lodBlend = lowBlend;  b.windBase = windLow;  _BladesLow.Append(b); }
+        }
+    }
+}
+
+// ---- Indirect args ----------------------------------------------------------
+//
+// Run with a (1,1,1) dispatch once per frame after CopyCount has filled the
+// counter slots. We patch instanceCount on the GPU so the render call has zero
+// CPU readback latency.
+
+[numthreads(1, 1, 1)]
+void CSBuildArgs(uint3 id : SV_DispatchThreadID)
+{
+    IndirectArgs a;
+    a.indexCountPerInstance = _IndexCountHigh;
+    a.instanceCount         = _CountHigh[0];
+    a.startIndex            = 0;
+    a.baseVertex            = 0;
+    a.startInstance         = 0;
+    _IndirectArgsHigh[0]    = a;
+
+    a.indexCountPerInstance = _IndexCountLow;
+    a.instanceCount         = _CountLow[0];
+    _IndirectArgsLow[0]     = a;
+}

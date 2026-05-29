@@ -1,0 +1,32 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a79569ad376f1584baad62c907f0844b, type: 3}
+  m_Name: GrassType
+  m_EditorClassIdentifier: TerrainGrassSystem.Grass::TerrainGrassSystem.GrassType
+  BaseHeight: 1.47
+  HeightVariance: 0
+  HeightRandomness: 0
+  BaseWidth: 0.06
+  WidthVariance: 0.03
+  WidthHeightCoupling: 0.581
+  BaseTilt: -0.6
+  TiltVariance: 0.39
+  SlopeFollow: 0
+  FacingVariance: 1
+  FacingRandomness: 0.063
+  Bend: 0
+  DensityMultiplier: 1
+  MaxBladesPerCell: 16
+  FoldHeight: 0
+  SmallBladeHeight: 0.2
+  BaseColor: {r: 0.18, g: 0.35, b: 0.1, a: 1}
+  TipColor: {r: 0.55, g: 0.78, b: 0.3, a: 1}
