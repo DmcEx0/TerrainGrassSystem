@@ -17,5 +17,12 @@
     "com.unity.mathematics": "1.3.2",
     "com.unity.modules.terrain": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0"
-  }
+  },
+  "samples": [
+    {
+      "displayName": "Demo Scene",
+      "description": "Example scene and assets for Terrain Grass System.",
+      "path": "Samples~/Demo"
+    }
+  ]
 }
