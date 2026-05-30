@@ -1,5 +1,9 @@
 # 🌿 Terrain Grass System
 
+**🌐 Язык / Language:** **Русский** · [English](README.en.md)
+
+---
+
 Оптимизированная процедурная трава для **Unity Terrain**.
 
 Реализует подход из доклада *«Procedural Grass in Ghost of Tsushima»*:
