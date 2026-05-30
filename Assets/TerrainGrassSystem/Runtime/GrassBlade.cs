@@ -41,7 +41,7 @@ namespace TerrainGrassSystem
         public float FacingRandomness;    public float FoldHeight;
         public float SlopeFollow;         public float SmallBladeHeight;
         public float WidthHeightCoupling; public float MaxBladesPerCell;
-        public float _pad1;               public float _pad2;
+        public float WindHeightFalloff;   public float _pad2;
 
         public const int SizeBytes = 96;
     }

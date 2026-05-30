@@ -28,5 +28,6 @@ MonoBehaviour:
   MaxBladesPerCell: 16
   FoldHeight: 0
   SmallBladeHeight: 0.2
+  WindHeightFalloff: 1
   BaseColor: {r: 0.18, g: 0.35, b: 0.1, a: 1}
   TipColor: {r: 0.55, g: 0.78, b: 0.3, a: 1}

@@ -53,6 +53,11 @@ namespace TerrainGrassSystem
         [Tooltip("Non-folded blades shorter than this (meters) are routed to the low-LOD mesh — 1 triangle instead of ~7. Folded blades are exempt (their geometry needs the v=0.5 vertex that low-LOD lacks). Set to 0 to disable. Typical: at or just below FoldHeight so anything short either folds or simplifies — no blade pays full mesh cost for a 10 cm sprout.")]
         public float SmallBladeHeight = 0.2f;
 
+        [Header("Wind")]
+        [Range(0f, 1f)]
+        [Tooltip("How strongly wind sway scales down for short blades. 0 = every blade sways with the same base magnitude (legacy). 1 = sway scales with (height / BaseHeight)^2, so a blade at half its base height catches ~1/4 the wind and very short sprouts stay almost still. Use to keep noise/wind from visibly jittering low grass and ground cover.")]
+        public float WindHeightFalloff          = 1f;
+
         [Header("Color")]
         [ColorUsage(false, false)] public Color BaseColor = new Color(0.18f, 0.35f, 0.10f);
         [ColorUsage(false, false)] public Color TipColor  = new Color(0.55f, 0.78f, 0.30f);
@@ -79,6 +84,7 @@ namespace TerrainGrassSystem
                 SmallBladeHeight    = SmallBladeHeight,
                 WidthHeightCoupling = WidthHeightCoupling,
                 MaxBladesPerCell    = MaxBladesPerCell,
+                WindHeightFalloff   = WindHeightFalloff,
             };
         }
     }

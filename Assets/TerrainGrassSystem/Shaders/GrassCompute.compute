@@ -412,6 +412,18 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
                          /*needLow*/  keepLow && (forceLow || inLow),
                          windHigh, windLow);
 
+        // Short blades barely catch the wind. windHeightFalloff (0..1) ramps in
+        // the effect: 0 keeps the legacy uniform sway, 1 scales the per-blade
+        // magnitude by (bh / baseHeight)^2 so a half-height blade gets ~1/4 the
+        // sway and very short sprouts stay almost still. heightRatio reuses
+        // invBaseHeight computed above; squaring biases the falloff toward tall
+        // blades so the noise reads on the canopy, not the ground cover.
+        float windHeightFalloff = saturate(gt.windHeightFalloff);
+        float windHeightRatio   = saturate(bh * invBaseHeight);
+        float windAtten         = lerp(1.0, windHeightRatio * windHeightRatio, windHeightFalloff);
+        windHigh *= windAtten;
+        windLow  *= windAtten;
+
         if (forceLow)
         {
             // Still respect max-distance fade so the simplified blade

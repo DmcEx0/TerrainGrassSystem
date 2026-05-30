@@ -39,7 +39,7 @@ struct GrassTypeParams
     float facingRandomness;    float foldHeight;           // 0..1; blends per-blade facing | meters; blades shorter than this render as folded V (0 = disabled)
     float slopeFollow;         float smallBladeHeight;     // 0..1; slope-follow blend | meters; non-folded blades shorter than this route to LowLOD (0 = disabled)
     float widthHeightCoupling; float maxBladesPerCell;     // 0..1; per-blade width = baseWidth * lerp(1, bh/baseHeight, coupling) | clamped max blades per tuft cell
-    float _pad1;               float _pad2;
+    float windHeightFalloff;   float _pad2;                // 0..1; how strongly wind sway scales down for short blades (0 = uniform, 1 = short blades nearly still)
 };
 
 // ---- Hashing ----------------------------------------------------------------
