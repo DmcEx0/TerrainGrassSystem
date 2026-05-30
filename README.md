@@ -1,29 +1,29 @@
 # 🌿 Terrain Grass System
 
-**🌐 Язык / Language:** **Русский** · [English](README.en.md)
+**🌐 Язык / Language:** **English** · [Русский](README.ru.md)
 
 ---
 
-Оптимизированная процедурная трава для **Unity Terrain**.
+Optimized procedural grass for **Unity Terrain**.
 
-Реализует подход из доклада *«Procedural Grass in Ghost of Tsushima»*:
+Implements the approach from the talk *"Procedural Grass in Ghost of Tsushima"*:
 
-- Травинки генерируются на GPU в compute-шейдере по кривой Безье.
-- Мир делится на тайлы; видимые тайлы культируются на CPU (frustum + дистанция).
-- Каждая травинка дополнительно отсеивается на GPU (frustum + max-distance).
-- Два LOD-меша с плавным кросс-фейдом через сжатие высоты на границах.
-- Шум-куртины влияют на высоту, цвет и направление травы.
-- Ветер — Perlin-текстура + per-blade фаза.
-- Изогнутые «фейковые» нормали и поворот к камере без дополнительной геометрии.
-- Художники задают параметры через ScriptableObject `GrassType`.
+- Blades are generated on the GPU in a compute shader along a Bézier curve.
+- The world is split into tiles; visible tiles are culled on the CPU (frustum + distance).
+- Each blade is additionally culled on the GPU (frustum + max-distance).
+- Two LOD meshes with smooth cross-fade via height compression at the boundaries.
+- Clump-noise fields drive grass height, color and orientation.
+- Wind — a Perlin texture + per-blade phase.
+- Curved "fake" normals and camera-facing rotation without extra geometry.
+- Artists tune parameters through a `GrassType` ScriptableObject.
 
-<img src="img/1.png" alt="Общий вид травы на террейне" width="1056">
+<img src="img/1.png" alt="Overview of grass on the terrain" width="1056">
 
 ---
 
-## 📦 Установка (UPM)
+## 📦 Installation (UPM)
 
-Пакет лежит в подпапке `Assets/TerrainGrassSystem`, поэтому в git-URL указывается `?path=`.
+The package lives in the `Assets/TerrainGrassSystem` subfolder, so the git URL specifies `?path=`.
 
 Package Manager → **Add package from git URL…**:
 
@@ -31,7 +31,7 @@ Package Manager → **Add package from git URL…**:
 https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem
 ```
 
-или вручную в `Packages/manifest.json` проекта:
+or manually in the project's `Packages/manifest.json`:
 
 ```json
 "com.terraingrasssystem.grass": "https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem",
@@ -39,395 +39,395 @@ https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem
 
 ---
 
-## 📋 Требования
+## 📋 Requirements
 
 | | |
 |---|---|
-| **Unity** | 6.x с URP 17.x (проверено на `6000.3.8f1`, URP `17.3.0`) |
-| **GPU** | Shader Model 5.0+ (Compute-шейдеры, `RenderMeshIndirect`, `StructuredBuffer` в vertex stage). Подходят все актуальные GPU, включая мобильные с Vulkan/Metal. |
+| **Unity** | 6.x with URP 17.x (tested on `6000.3.8f1`, URP `17.3.0`) |
+| **GPU** | Shader Model 5.0+ (compute shaders, `RenderMeshIndirect`, `StructuredBuffer` in the vertex stage). All current GPUs qualify, including mobile with Vulkan/Metal. |
 
 ---
 
-## 📁 Состав модуля
+## 📁 Module layout
 
 ```
 TerrainGrassSystem/
 ├── Runtime/                            (asmdef: TerrainGrassSystem.Grass)
-│   ├── GrassBlade.cs                   C#-зеркало HLSL-структур
-│   ├── GrassType.cs                    ScriptableObject параметров травы
-│   ├── GrassTerrainSettings.cs         ScriptableObject настроек тайлов/LOD
-│   ├── GrassBladeMesh.cs               генерация unit-mesh для двух LOD
-│   ├── GrassWind.cs                    компонент ветра
-│   ├── GrassRenderer.cs                ядро: буферы, indirect draw
-│   └── GrassTerrain.cs                 компонент-обвязка для Unity Terrain
+│   ├── GrassBlade.cs                   C# mirror of the HLSL structs
+│   ├── GrassType.cs                    ScriptableObject of grass parameters
+│   ├── GrassTerrainSettings.cs         ScriptableObject of tile/LOD settings
+│   ├── GrassBladeMesh.cs               unit-mesh generation for the two LODs
+│   ├── GrassWind.cs                    wind component
+│   ├── GrassRenderer.cs                core: buffers, indirect draw
+│   └── GrassTerrain.cs                 wrapper component for Unity Terrain
 │
 ├── Shaders/
-│   ├── GrassCommon.hlsl                структуры и хелперы (общие)
-│   ├── GrassWind.hlsl                  семплинг ветра
+│   ├── GrassCommon.hlsl                structs and helpers (shared)
+│   ├── GrassWind.hlsl                  wind sampling
 │   ├── GrassCompute.compute            CSGenerate + CSBuildArgs
-│   ├── GrassBlade.shader               URP HLSL-шейдер (рабочий по умолчанию)
-│   └── GrassBladeGraph.hlsl            Custom Function для ShaderGraph
+│   ├── GrassBlade.shader               URP HLSL shader (default working one)
+│   └── GrassBladeGraph.hlsl            Custom Function for ShaderGraph
 │
 └── Editor/                             (asmdef: TerrainGrassSystem.Grass.Editor)
-    ├── GrassNoiseGenerator.cs          окно генерации шума и маски
-    └── GrassPaintTool.cs               кисть «Paint Grass» для террейна
+    ├── GrassNoiseGenerator.cs          noise & mask generation window
+    └── GrassPaintTool.cs               "Paint Grass" brush for the terrain
 ```
 
 ---
 
-## 🚀 Быстрый старт: настройка сцены
+## 🚀 Quick start: scene setup
 
-### Шаг 1. Сгенерировать стартовые текстуры
+### Step 1. Generate the starting textures
 
-Открыть окно генератора: **`Tools → GrassSystem → Noise & Mask Generator`**.
+Open the generator window: **`Tools → GrassSystem → Noise & Mask Generator`**.
 
-![Окно Grass Noise & Mask](img/2.png)
+![Grass Noise & Mask window](img/2.png)
 
-В окне есть выпадающий список **Texture Type** — от выбора зависит наполнение окна:
+The window has a **Texture Type** dropdown — its value determines the window contents:
 
-1. **Clump Noise** — бесшовный Perlin-шум для куртин (высота / цвет / направление). Настроить `Scale`, `Octaves`, `Persistence`, `Lacunarity`, тон и нажать **Generate Clump Noise**.
-2. **Density Mask** — пустая маска плотности. Выбрать размер (рекомендуется 1024) и нажать **Generate Blank Density Mask**. По умолчанию маска пустая (R = 0): трава появляется только там, где закрашена.
+1. **Clump Noise** — seamless Perlin noise for clumps (height / color / orientation). Set `Scale`, `Octaves`, `Persistence`, `Lacunarity`, tone, and click **Generate Clump Noise**.
+2. **Density Mask** — an empty density mask. Pick a size (1024 recommended) and click **Generate Blank Density Mask**. By default the mask is empty (R = 0): grass appears only where it is painted.
 
-Поле **Folder** + кнопка **Browse…** задают папку экспорта (всегда внутри `Assets/`). Сгенерированные текстуры импортируются с правильными настройками автоматически (без сжатия, linear, нужный wrap-mode).
+The **Folder** field + **Browse…** button set the export folder (always inside `Assets/`). Generated textures are imported with the correct settings automatically (no compression, linear, the proper wrap-mode).
 
-### Шаг 2. Создать ассеты-конфиги
+### Step 2. Create the config assets
 
-В окне Project: **ПКМ → Create → TerrainGrassSystem → Grass → …**
+In the Project window: **RMB → Create → TerrainGrassSystem → Grass → …**
 
-- **Grass Type** — ровно один на террейн (параметры внешнего вида травы).
-- **Terrain Settings** — настройки тайлов / LOD / производительности.
+- **Grass Type** — exactly one per terrain (grass appearance parameters).
+- **Terrain Settings** — tile / LOD / performance settings.
 
-### Шаг 3. Создать материал
+### Step 3. Create a material
 
-- **ПКМ → Create → Material**, назвать, например, `M_Grass`.
-- Назначить шейдер **`TerrainGrassSystem/Grass/Blade`**.
-- *(Для ShaderGraph-варианта — см. раздел [ShaderGraph](#-вариант-с-shadergraph).)*
+- **RMB → Create → Material**, name it e.g. `M_Grass`.
+- Assign the shader **`TerrainGrassSystem/Grass/Blade`**.
+- *(For the ShaderGraph variant — see the [ShaderGraph](#-shadergraph-variant) section.)*
 
-### Шаг 4. Повесить компоненты на террейн
+### Step 4. Attach the components to the terrain
 
-На GameObject с компонентом **`Terrain`** добавить **`TerrainGrassSystem → Grass → Grass Terrain`** и заполнить поля (см. [справку ниже](#grassterrain)):
+On the GameObject with the **`Terrain`** component, add **`TerrainGrassSystem → Grass → Grass Terrain`** and fill in the fields (see the [reference below](#grassterrain)):
 
-| Поле | Что назначить |
+| Field | What to assign |
 |---|---|
 | Compute Shader | `GrassCompute` |
 | High Lod Material | `M_Grass` |
-| Low Lod Material | `M_Grass` *(можно тот же)* |
-| Grass Mask | сгенерированная маска |
-| Clump Noise | сгенерированный Perlin-шум |
-| Type | ассет `GrassType` |
-| Settings | ассет `GrassTerrainSettings` |
+| Low Lod Material | `M_Grass` *(can be the same)* |
+| Grass Mask | the generated mask |
+| Clump Noise | the generated Perlin noise |
+| Type | the `GrassType` asset |
+| Settings | the `GrassTerrainSettings` asset |
 
-![Инспектор Grass Terrain](img/3.png)
+![Grass Terrain inspector](img/3.png)
 
-### Шаг 5. Добавить ветер *(опционально)*
+### Step 5. Add wind *(optional)*
 
-На любой GameObject в сцене добавить компонент **`TerrainGrassSystem → Grass → Grass Wind`** и назначить `Wind Noise` (тот же Perlin-шум или отдельный — главное бесшовный). Без этого компонента трава просто не качается.
+On any GameObject in the scene add the **`TerrainGrassSystem → Grass → Grass Wind`** component and assign `Wind Noise` (the same Perlin noise or a separate one — the key is that it be seamless). Without this component the grass simply does not sway.
 
-### Шаг 6. Покрасить траву
+### Step 6. Paint the grass
 
-Маска по умолчанию пустая, поэтому травы пока нет. В инспекторе террейна у `GrassTerrain` появляется кисть **«TerrainGrassSystem/Paint Grass»** в ряду кистей террейна. Выбрать её и красить (см. раздел [Покраска](#-покраска-маски)).
+The mask is empty by default, so there is no grass yet. In the terrain inspector, `GrassTerrain` adds a **"TerrainGrassSystem/Paint Grass"** brush to the terrain brush row. Select it and paint (see the [Painting](#-painting-the-mask) section).
 
-### Шаг 7. Play
+### Step 7. Play
 
-Нажать **Play**. Трава видна и в Scene View без запуска — компоненты помечены `[ExecuteAlways]`.
+Hit **Play**. Grass is also visible in the Scene View without entering Play mode — the components are marked `[ExecuteAlways]`.
 
 ---
 
-## 🧩 Справка по компонентам
+## 🧩 Component reference
 
 ### GrassTerrain
 
-Главный компонент. Вешается на объект с `Terrain`, связывает все ассеты и каждый кадр запускает генерацию.
+The main component. Attached to the object with `Terrain`, it links all the assets and dispatches generation every frame.
 
-| Поле | Тип | Описание |
+| Field | Type | Description |
 |---|---|---|
-| **Compute Shader** | ComputeShader | Шейдер генерации — ассет `GrassCompute`. |
-| **High Lod Material** | Material | Материал на шейдере `TerrainGrassSystem/Grass/Blade` для ближнего LOD. |
-| **Low Lod Material** | Material | Материал для дальнего LOD. Может быть тем же, что и High — отдельный позволяет тюнить отдельно. |
-| **Grass Mask** | Texture2D | RGBA-маска, рисуется кистью Paint Grass. R = размещение/плотность, G = множитель высоты, B = clamp/пучкование, A = резерв. *(см. [Маска](#-маска-террейна-grass-mask))* |
-| **Clump Noise** | Texture2D | Бесшовный Perlin-шум. Задаёт куртины: вариацию высоты, цвета и направления травы. **Обязателен** — без него трава не рендерится, хотя на *размещение* он не влияет. |
-| **Type** | GrassType | Один тип травы на весь террейн. Локальные вариации задаются маской и шумом. |
-| **Settings** | GrassTerrainSettings | Настройки тайлов, LOD, дистанций, ёмкости буферов. |
-| **Override Camera** | Camera | *(только Play-mode)* Камера для расчёта LOD/culling вместо `Camera.main`. В Edit-mode всегда побеждает Scene View-камера. |
+| **Compute Shader** | ComputeShader | The generation shader — the `GrassCompute` asset. |
+| **High Lod Material** | Material | Material on the `TerrainGrassSystem/Grass/Blade` shader for the near LOD. |
+| **Low Lod Material** | Material | Material for the far LOD. May be the same as High — a separate one lets you tune it independently. |
+| **Grass Mask** | Texture2D | RGBA mask, painted with the Paint Grass brush. R = placement/density, G = height multiplier, B = clamp/clumping, A = reserved. *(see [Mask](#-terrain-mask-grass-mask))* |
+| **Clump Noise** | Texture2D | Seamless Perlin noise. Defines clumps: variation of grass height, color and orientation. **Required** — without it grass does not render, although it does not affect *placement*. |
+| **Type** | GrassType | One grass type for the whole terrain. Local variation comes from the mask and noise. |
+| **Settings** | GrassTerrainSettings | Tile, LOD, distance and buffer-capacity settings. |
+| **Override Camera** | Camera | *(Play-mode only)* Camera used for LOD/culling instead of `Camera.main`. In Edit mode the Scene View camera always wins. |
 
 ---
 
 ### GrassWind
 
-Источник ветра. Один на сцену; рендереры находят его автоматически (`FindFirstObjectByType`). Работает и в Edit-mode.
+The wind source. One per scene; renderers find it automatically (`FindFirstObjectByType`). Works in Edit mode too.
 
-| Поле | Тип | По умолч. | Описание |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| **Wind Noise** | Texture2D | — | Бесшовный Perlin-шум. R — основной порыв, G — вторая октава. |
-| **Strength** | float ≥ 0 | `0.15` | Сила ветра (амплитуда наклона травинок). |
-| **Frequency** | float | `0.06` | Мировая частота семплинга шума. Меньше = более крупные «волны» порывов. |
-| **Scroll Speed** | float | `0.6` | Скорость прокрутки основной октавы шума. |
-| **Gust Speed** | float | `0.9` | Скорость прокрутки второй октавы. Несовпадение с основной делает ветер «живым». |
-| **Direction Degrees** | 0..360 | `45` | Направление ветра в градусах (в плоскости XZ). |
+| **Wind Noise** | Texture2D | — | Seamless Perlin noise. R — main gust, G — second octave. |
+| **Strength** | float ≥ 0 | `0.15` | Wind strength (amplitude of blade tilt). |
+| **Frequency** | float | `0.06` | World-space sampling frequency of the noise. Lower = larger gust "waves". |
+| **Scroll Speed** | float | `0.6` | Scroll speed of the main noise octave. |
+| **Gust Speed** | float | `0.9` | Scroll speed of the second octave. A mismatch with the main one makes the wind feel "alive". |
+| **Direction Degrees** | 0..360 | `45` | Wind direction in degrees (in the XZ plane). |
 
 ---
 
 ### GrassType
 
-Параметры внешнего вида травы. Один ассет на весь террейн; разнообразие даёт маска + clump-шум.
+Grass appearance parameters. One asset for the whole terrain; variety comes from the mask + clump noise.
 
-#### Height (высота)
+#### Height
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Base Height** | `0.6` | Базовая высота травинки, м. |
-| **Height Variance** | `0.2` | Вариация высоты по **clump-шуму** — соседи меняются вместе, образуя видимые пятна высокой/низкой травы. |
-| **Height Randomness** | `0.1` | Случайный разброс высоты **per-blade**, м. Независим от шума: каждая травинка тянет свой ролл. |
+| **Base Height** | `0.6` | Base blade height, m. |
+| **Height Variance** | `0.2` | Height variation by **clump noise** — neighbors change together, forming visible patches of tall/short grass. |
+| **Height Randomness** | `0.1` | Random **per-blade** height spread, m. Independent of the noise: each blade rolls its own. |
 
-#### Width (ширина)
+#### Width
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Base Width** | `0.04` | Базовая ширина у корня, м. |
-| **Width Variance** | `0.01` | Случайный разброс ширины. |
-| **Width Height Coupling** | `0` (0..1) | Насколько ширина масштабируется от высоты травинки. 0 = ширина независима (legacy); 1 = низкая травинка становится пропорционально тоньше. |
+| **Base Width** | `0.04` | Base width at the root, m. |
+| **Width Variance** | `0.01` | Random width spread. |
+| **Width Height Coupling** | `0` (0..1) | How much the width scales with blade height. 0 = width is independent (legacy); 1 = a short blade becomes proportionally thinner. |
 
-#### Shape (форма)
+#### Shape
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Base Tilt** | `0.35` | Наклон вершины вперёд, радианы. |
-| **Tilt Variance** | `0.15` | Случайный разброс наклона. |
-| **Slope Follow** | `0.5` (0..1) | Насколько травинка повторяет наклон рельефа. 0 = всегда строго вверх; 1 = перпендикулярно поверхности. |
-| **Facing Variance** | `0.5` | Случайный поворот вокруг вертикали, радианы. Добавляется поверх направления из шума. 0 → соседи смотрят одинаково (видны «полосы» и проплешины при вращении камеры); ~0.5 (≈28°) — хорошая локальная вариация; π — полностью случайно. |
-| **Facing Randomness** | `0` (0..1) | Бленд направления между clump-шумом и полностью случайным per-blade углом. 0 = следуют шуму; 1 = шум игнорируется. |
-| **Bend** | `0.15` | Прогиб средней контрольной точки Безье (кривизна). Положительный — арка вперёд. |
+| **Base Tilt** | `0.35` | Forward tilt of the tip, radians. |
+| **Tilt Variance** | `0.15` | Random tilt spread. |
+| **Slope Follow** | `0.5` (0..1) | How much the blade follows the terrain slope. 0 = always straight up; 1 = perpendicular to the surface. |
+| **Facing Variance** | `0.5` | Random rotation around the vertical, radians. Added on top of the noise-driven direction. 0 → neighbors face the same way (visible "stripes" and bald spots when rotating the camera); ~0.5 (≈28°) is good local variation; π = fully random. |
+| **Facing Randomness** | `0` (0..1) | Blends direction between clump noise and a fully random per-blade angle. 0 = follow the noise; 1 = ignore the noise. |
+| **Bend** | `0.15` | Bend of the middle Bézier control point (curvature). Positive = arches forward. |
 
-#### Density (плотность)
+#### Density
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Density Multiplier** | `1.0` (0..4) | Глобальный множитель плотности (домножается на `mask.r`). |
-| **Max Blades Per Cell** | `8` (1..16) | Максимум травинок в ячейке при полностью закрашенном канале B (Clamp). При B=0 — базовые 1–2; при B=1 счётчик растёт к этому максимуму. ⚠️ Нагрузка на буферы растёт линейно — поднимать `MaxHighLodBlades` / `MaxLowLodBlades` синхронно. |
+| **Density Multiplier** | `1.0` (0..4) | Global density multiplier (multiplied by `mask.r`). |
+| **Max Blades Per Cell** | `8` (1..16) | Maximum blades in a cell when channel B (Clamp) is fully painted. At B=0 — the base 1–2; at B=1 the count grows toward this maximum. ⚠️ Buffer load grows linearly — raise `MaxHighLodBlades` / `MaxLowLodBlades` in step. |
 
-#### Short-blade optimizations (оптимизация коротких травинок)
+#### Short-blade optimizations
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Fold Height** | `0.3` | Травинки короче этого (м) рендерятся как **один меш, сложенный в V** — одна инстанция = две короткие суб-травинки. `0` = выключить. Типично 30–50% от Base Height. |
-| **Small Blade Height** | `0.2` | Несложенные травинки короче этого (м) уходят на low-LOD меш (1 треугольник вместо ~7). Сложенные не трогаются. `0` = выключить. |
+| **Fold Height** | `0.3` | Blades shorter than this (m) render as **a single mesh folded into a V** — one instance = two short sub-blades. `0` = disabled. Typically 30–50% of Base Height. |
+| **Small Blade Height** | `0.2` | Unfolded blades shorter than this (m) move to the low-LOD mesh (1 triangle instead of ~7). Folded ones are untouched. `0` = disabled. |
 
-#### Color (цвет)
+#### Color
 
-| Поле | Описание |
+| Field | Description |
 |---|---|
-| **Base Color** | Цвет у корня. |
-| **Tip Color** | Цвет у вершины. Между ними linear-градиент + ещё один lerp по clump-шуму (канал G). |
+| **Base Color** | Color at the root. |
+| **Tip Color** | Color at the tip. Between them is a linear gradient + one more lerp by clump noise (channel G). |
 
 ---
 
 ### GrassTerrainSettings
 
-Настройки производительности и раскладки. Можно шарить между несколькими террейнами.
+Performance and layout settings. Can be shared between several terrains.
 
 #### Tile Layout
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Tile Size** | `16` (≥2) | Размер тайла в метрах. Меньше = точнее culling, но больше диспатчей за кадр. |
-| **Blades Per Tile Axis** | `96` (4..256) | Травинок по оси внутри тайла. Всего на тайл = N×N. Сетка джиттерится, чтобы не выглядеть решёткой. |
+| **Tile Size** | `16` (≥2) | Tile size in meters. Smaller = more precise culling, but more dispatches per frame. |
+| **Blades Per Tile Axis** | `96` (4..256) | Blades per axis inside a tile. Total per tile = N×N. The grid is jittered so it does not look like a lattice. |
 
 #### Culling
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Tile Cull Distance** | `80` (≥2) | Тайлы дальше этой дистанции вообще не генерируются. |
-| **Max Blade Distance** | `60` (≥2) | Per-blade максимум: травинки дальше отбрасываются на GPU. |
+| **Tile Cull Distance** | `80` (≥2) | Tiles beyond this distance are not generated at all. |
+| **Max Blade Distance** | `60` (≥2) | Per-blade maximum: blades farther away are discarded on the GPU. |
 
 #### LOD
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **High Lod Distance** | `18` (≥0) | Ближе этой дистанции — high-LOD меш (4 сегмента). |
-| **Lod Blend Band** | `6` (≥0.1) | Ширина зоны кросс-фейда у переходов LOD и у max-distance. Больше = мягче, но больше overdraw. |
+| **High Lod Distance** | `18` (≥0) | Closer than this distance — the high-LOD mesh (4 segments). |
+| **Lod Blend Band** | `6` (≥0.1) | Width of the cross-fade zone at LOD transitions and at max-distance. Larger = softer, but more overdraw. |
 
-#### Distance Thinning (прореживание по дистанции)
+#### Distance Thinning
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Thinning Start Distance** | `30` (≥0) | С этой дистанции трава начинает редеть. Ближе — не прореживается; high-LOD не трогается никогда. |
-| **Thinning Strength** | `0` (0..1) | Насколько агрессивно редеет к max-distance. 0 = нет; 1 = максимум (почти все дальние low-LOD травинки выпадают). |
+| **Thinning Start Distance** | `30` (≥0) | From this distance grass starts thinning out. Closer — no thinning; high-LOD is never touched. |
+| **Thinning Strength** | `0` (0..1) | How aggressively it thins toward max-distance. 0 = none; 1 = maximum (almost all far low-LOD blades drop out). |
 
 #### Clumping noise
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Clump Scale** | `0.05` | Мировой масштаб clump-шума. Меньше = более крупные куртины. |
+| **Clump Scale** | `0.05` | World-space scale of the clump noise. Smaller = larger clumps. |
 
 #### Buffer Capacity
 
-| Поле | По умолч. | Описание |
+| Field | Default | Description |
 |---|---|---|
-| **Max High Lod Blades** | `600 000` (≥1024) | Потолок high-LOD буфера на кадр (по всем тайлам). Переполнение → травинки теряются. |
-| **Max Low Lod Blades** | `800 000` (≥1024) | То же для low-LOD. |
+| **Max High Lod Blades** | `600 000` (≥1024) | Ceiling of the high-LOD buffer per frame (across all tiles). Overflow → blades are lost. |
+| **Max Low Lod Blades** | `800 000` (≥1024) | Same for low-LOD. |
 
 ---
 
-## 🎨 Маска террейна (`Grass Mask`)
+## 🎨 Terrain mask (`Grass Mask`)
 
-RGBA-текстура размером с террейн (или меньше — растягивается по UV). Каналы:
+An RGBA texture the size of the terrain (or smaller — it stretches over UV). Channels:
 
-| Канал | Назначение |
+| Channel | Purpose |
 |---|---|
-| **R** | **Размещение / плотность** (0..1). 0 — травы нет; >0 — растёт. Единственный обязательный канал для базовой травы. |
-| **G** | **Множитель высоты** (0..1). 1 — полная высота из `GrassType`; 0 — нет травы. При G < 0.5 включается folded-blade оптимизация. |
-| **B** | **Clamp / пучкование** (0..1). ОПЦИОНАЛЬНО. Где закрашен — растёт число травинок из одной точки + небольшой буст высоты (+25%) и яркости (+20%) на максимуме. Среднее число травинок на ячейку: B=0 → 1–2 (база), B=1 → к `Max Blades Per Cell`. |
-| **A** | Зарезервирован. |
+| **R** | **Placement / density** (0..1). 0 — no grass; >0 — it grows. The only required channel for basic grass. |
+| **G** | **Height multiplier** (0..1). 1 — full height from `GrassType`; 0 — no grass. At G < 0.5 the folded-blade optimization kicks in. |
+| **B** | **Clamp / clumping** (0..1). OPTIONAL. Where painted — the number of blades growing from one point increases + a small height boost (+25%) and brightness boost (+20%) at the maximum. Average blades per cell: B=0 → 1–2 (base), B=1 → toward `Max Blades Per Cell`. |
+| **A** | Reserved. |
 
-![Пример маски травы](img/4.png)
+![Grass mask example](img/4.png)
 
-**Folded blade** — когда итоговая высота травинки опускается ниже `GrassType.FoldHeight`, compute эмитит одну «сложенную пополам» травинку. Шейдер (`ApplyBladeFold` в `GrassCommon.hlsl`) изгибает меш в точке `v=0.5` — получается V-образная фигура: середина меша становится корнем, а оба конца — вершинами двух коротких суб-травинок. Одна инстанция = две видимые травинки «бесплатно». `FoldHeight = 0` выключает оптимизацию.
+**Folded blade** — when a blade's final height drops below `GrassType.FoldHeight`, compute emits a single "folded in half" blade. The shader (`ApplyBladeFold` in `GrassCommon.hlsl`) bends the mesh at point `v=0.5` — yielding a V shape: the middle of the mesh becomes the root, and both ends become the tips of two short sub-blades. One instance = two visible blades "for free". `FoldHeight = 0` disables the optimization.
 
 ---
 
-## 🖌 Покраска маски
+## 🖌 Painting the mask
 
-Рисовать удобнее всего прямо из инспектора террейна. У `GrassTerrain` в ряду кистей террейна появляется **«TerrainGrassSystem/Paint Grass»**.
+The easiest way to paint is right from the terrain inspector. `GrassTerrain` adds **"TerrainGrassSystem/Paint Grass"** to the terrain brush row.
 
-<img src="img/5.png" alt="Кисть Paint Grass в инспекторе террейна" width="1715">
+<img src="img/5.png" alt="Paint Grass brush in the terrain inspector" width="1715">
 
-**Режимы (Mode):**
+**Modes:**
 
-| Режим | Канал | Что делает |
+| Mode | Channel | What it does |
 |---|---|---|
-| **Placement (R)** | R | Где растёт трава. Базовый режим, единственный нужный для дефолта. |
-| **Height (G)** | G | Локально варьировать высоту травы (0 = нет, 1 = полная). |
-| **Spacing / Clamp (B)** | B | Пучкование: где закрашено — пучки из нескольких травинок с одного корня. |
+| **Placement (R)** | R | Where grass grows. The base mode, the only one needed by default. |
+| **Height (G)** | G | Locally vary grass height (0 = none, 1 = full). |
+| **Spacing / Clamp (B)** | B | Clumping: where painted — tufts of several blades from one root. |
 
-**Управление:**
+**Controls:**
 
-- Зажатый **Ctrl** во время рисования — вычитает значение того же канала (Ctrl + Placement = убрать траву, и т.д.).
-- **Ctrl + Z** / **Ctrl + Shift + Z** (или **Ctrl + Y**) — undo / redo, пока активна кисть. История in-memory, живёт до domain reload, до 16 штрихов.
+- Holding **Ctrl** while painting — subtracts the value of the same channel (Ctrl + Placement = remove grass, and so on).
+- **Ctrl + Z** / **Ctrl + Shift + Z** (or **Ctrl + Y**) — undo / redo while the brush is active. The history is in-memory, lives until a domain reload, up to 16 strokes.
 
 **Mask Utilities:**
 
-- **Clear All Grass** — обнулить весь канал размещения.
-- **Save Now** — принудительно сохранить PNG маски (иначе сохраняется отложенно после штриха).
+- **Clear All Grass** — zero out the entire placement channel.
+- **Save Now** — force-save the mask PNG (otherwise it is saved deferred after a stroke).
 
 ---
 
-## ⚙️ Окно «Noise & Mask Generator»
+## ⚙️ "Noise & Mask Generator" window
 
 **`Tools → GrassSystem → Noise & Mask Generator`**
 
-Поле **Texture Type** переключает наполнение окна между двумя генераторами:
+The **Texture Type** field switches the window contents between two generators:
 
 ### Clump Noise (Perlin)
 
-| Параметр | Описание |
+| Parameter | Description |
 |---|---|
-| **Output Size** | Размер текстуры (64…4096). |
-| **Seed** | Зерно. Кнопка **Re-roll Seed** даёт новый паттерн при тех же настройках. |
-| **Scale** | Плотность фич: больше = мельче паттерн. |
-| **Octaves** | Число слоёв fBm. Больше = богаче/«шумнее». |
-| **Persistence** | Громкость каждого следующего слоя. Низкая = гладко, высокая = шумно. |
-| **Lacunarity** | Рост частоты на слой. 2 = стандартный fBm. |
-| **Contrast** | Резкость переходов свет/тень. 1 = нейтрально, 0 = плоско, >1 = жёстко. |
-| **Brightness** | Сдвиг яркости после контраста. |
+| **Output Size** | Texture size (64…4096). |
+| **Seed** | Seed. The **Re-roll Seed** button yields a new pattern at the same settings. |
+| **Scale** | Feature density: larger = finer pattern. |
+| **Octaves** | Number of fBm layers. More = richer/"noisier". |
+| **Persistence** | Volume of each subsequent layer. Low = smooth, high = noisy. |
+| **Lacunarity** | Frequency growth per layer. 2 = standard fBm. |
+| **Contrast** | Sharpness of light/dark transitions. 1 = neutral, 0 = flat, >1 = hard. |
+| **Brightness** | Brightness shift after contrast. |
 
-Внизу — **живой превью** и кнопка **Generate Clump Noise**.
+At the bottom — a **live preview** and the **Generate Clump Noise** button.
 
 ### Density Mask
 
-| Параметр | Описание |
+| Parameter | Description |
 |---|---|
-| **Size** | Размер маски (рекомендуется 1024). |
+| **Size** | Mask size (1024 recommended). |
 
-Кнопка **Generate Blank Density Mask** создаёт пустую маску (R=0 → травы нет, пока она не закрашена).
+The **Generate Blank Density Mask** button creates an empty mask (R=0 → no grass until it is painted).
 
-**Export Folder** (общее для обоих типов) — папка внутри `Assets/`, куда сохраняется PNG. Кнопка **Browse…** открывает выбор папки сразу в `Assets` текущего проекта.
+**Export Folder** (shared by both types) — a folder inside `Assets/` where the PNG is saved. The **Browse…** button opens a folder picker straight in the current project's `Assets`.
 
 ---
 
-## 🚄 Производительность
+## 🚄 Performance
 
-Дефолтные настройки целятся в ~100 000 видимых травинок на 30-метровой панораме.
+The default settings target ~100,000 visible blades across a 30-meter panorama.
 
-**Ориентиры:**
+**Reference figures:**
 
-- GPU-кадр на RTX 3060 — ~1.2 мс на compute + ~0.8 мс на рендер при 100k травинок.
-- На мобильных: `Blades Per Tile Axis` → 48–64, `Max Blade Distance` → 25 м.
-- Длинная трава (`Base Height` > 1 м) сильно повышает overdraw — обрезать `High Lod Distance` / `Max Blade Distance` первым делом.
+- GPU frame on an RTX 3060 — ~1.2 ms on compute + ~0.8 ms on render at 100k blades.
+- On mobile: `Blades Per Tile Axis` → 48–64, `Max Blade Distance` → 25 m.
+- Tall grass (`Base Height` > 1 m) greatly increases overdraw — trim `High Lod Distance` / `Max Blade Distance` first.
 
-**Тюнинг (по убыванию эффекта):**
+**Tuning (in descending order of effect):**
 
 1. `Max Blade Distance` ↓
 2. `Blades Per Tile Axis` ↓
 3. `Tile Cull Distance` ↓
-4. `Lod Blend Band` ↓ (меньше overdraw в зоне кросс-фейда)
+4. `Lod Blend Band` ↓ (less overdraw in the cross-fade zone)
 
 ---
 
 ## 🛠 Troubleshooting
 
-**Трава вообще не рендерится**
-- В `GrassTerrain` обязательны: Compute Shader, оба материала, маска, шум, Type, Settings. Если хоть одно поле пустое — компонент молча скипает кадр.
-- Маска пустая по умолчанию — **покрасить траву** кистью Placement.
-- `Camera.main` не найдена → назначить `Override Camera` или поставить тег MainCamera.
+**Grass does not render at all**
+- In `GrassTerrain` these are required: Compute Shader, both materials, mask, noise, Type, Settings. If even one field is empty — the component silently skips the frame.
+- The mask is empty by default — **paint the grass** with the Placement brush.
+- `Camera.main` not found → assign `Override Camera` or set the MainCamera tag.
 
-**Трава мерцает / пропадает на расстоянии**
-- `Lod Blend Band` слишком мал относительно `High Lod Distance` / `Max Blade Distance`. Поднять до 4–8 м.
-- Переполняется `Max High Lod Blades` / `Max Low Lod Blades` — проверить в RenderDoc или поднять потолок.
+**Grass flickers / disappears at distance**
+- `Lod Blend Band` is too small relative to `High Lod Distance` / `Max Blade Distance`. Raise it to 4–8 m.
+- `Max High Lod Blades` / `Max Low Lod Blades` is overflowing — check in RenderDoc or raise the ceiling.
 
-**Трава «лежит» на одной высоте, игнорируя рельеф**
-- Compute читает `terrain.terrainData.heightmapTexture`. Убедиться, что Terrain не смещён нестандартным Transform и `terrain.transform.position` совпадает с используемым origin.
+**Grass "lies" at one height, ignoring the terrain**
+- Compute reads `terrain.terrainData.heightmapTexture`. Make sure the Terrain is not offset by a non-standard Transform and that `terrain.transform.position` matches the origin used.
 
-**Ветер не двигается в Scene View**
-- `GrassWind` в Edit-mode использует `EditorApplication.timeSinceStartup`. Если статично — проверить, есть ли в сцене активный объект с `GrassWind` и не отключён ли его GameObject.
+**Wind does not move in Scene View**
+- `GrassWind` in Edit mode uses `EditorApplication.timeSinceStartup`. If it is static — check whether there is an active object with `GrassWind` in the scene and that its GameObject is not disabled.
 
-**После переключения LOD травинки «лопаются»**
-- Слишком резкий `Lod Blend Band`. Увеличить (~1/3 от `High Lod Distance`).
+**Blades "pop" after a LOD switch**
+- `Lod Blend Band` is too abrupt. Increase it (~1/3 of `High Lod Distance`).
 
-**Сильный overdraw / падает FPS**
-- См. раздел [Производительность](#-производительность). Главные виновники — `Max Blade Distance` и `Blades Per Tile Axis`.
+**Heavy overdraw / FPS drops**
+- See the [Performance](#-performance) section. The main culprits are `Max Blade Distance` and `Blades Per Tile Axis`.
 
-**Тени от травы отсутствуют**
-- В ручном шейдере тег ShadowCasting уже выставлен.
-- В Universal Renderer Asset проверить, что Cast/Receive Shadows не отключены глобально.
+**No shadows from the grass**
+- In the manual shader the ShadowCasting tag is already set.
+- In the Universal Renderer Asset, check that Cast/Receive Shadows are not disabled globally.
 
 ---
 
-## 🧪 Вариант с ShaderGraph
+## 🧪 ShaderGraph variant
 
-`GrassBladeGraph.hlsl` содержит Custom Function `GrassBlade_Vertex_float`. Чтобы заменить ручной HLSL-шейдер на ShaderGraph:
+`GrassBladeGraph.hlsl` contains the Custom Function `GrassBlade_Vertex_float`. To replace the manual HLSL shader with ShaderGraph:
 
-1. **Create → Shader Graph → URP → Lit Shader Graph**, имя `GrassBlade`.
+1. **Create → Shader Graph → URP → Lit Shader Graph**, name it `GrassBlade`.
 2. **Graph Inspector → Graph Settings:** Material = Lit, Surface Type = Opaque, Render Face = Both.
 3. **Properties (exposed, Float):**
 
-   | Property | Значение |
+   | Property | Value |
    |---|---|
    | `_CamFacingThreshold` | `0.8` (edge-on cos threshold) |
-   | `_CamFacingMaxAngle` | `8.0` (макс. угол твиста на вершине, °) |
+   | `_CamFacingMaxAngle` | `8.0` (max twist angle at the tip, °) |
    | `_CurvedNormalAmount` | `0.7` |
    | `_AOStrength` | `0.5` |
    | `_TipBoost` | `1.2` |
    | `_Smoothness` | `0.05` |
 
-4. **Custom Function нода:** Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
+4. **Custom Function node:** Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
    - **Inputs:** `PositionOS` (Vector3), `InstanceID` (Float), `CamFacingT` (Float), `CamFacingMaxA` (Float), `CurvedNAmt` (Float), `AOStrength` (Float), `TipBoost` (Float)
    - **Outputs:** `PositionWS` (Vector3), `NormalWS` (Vector3), `ColorBase` (Vector3), `UV` (Vector2)
-5. **Подключения:**
+5. **Connections:**
    - Position (Object Space) → `PositionOS`
    - Instance ID → `InstanceID`
-   - Property-ноды → соответствующие входы
-   - `PositionWS` → блок Vertex Position (напрямую, без Transform-ноды)
-   - `NormalWS` → блок Vertex Normal (напрямую)
-   - `ColorBase` → блок Base Color
-   - `_Smoothness` → блок Smoothness
+   - Property nodes → the matching inputs
+   - `PositionWS` → the Vertex Position block (directly, no Transform node)
+   - `NormalWS` → the Vertex Normal block (directly)
+   - `ColorBase` → the Base Color block
+   - `_Smoothness` → the Smoothness block
 
-   > `Graphics.RenderMeshIndirect` использует единичную model-матрицу, поэтому Object Space ≡ World Space — Transform (World → Object) был бы no-op.
+   > `Graphics.RenderMeshIndirect` uses an identity model matrix, so Object Space ≡ World Space — a Transform (World → Object) would be a no-op.
 
-6. **(опц.) Custom Function `GrassBlade_Masks`** — отдельные выходы AO и маски кончиков (вместо пред-смешанного `ColorBase`). Полезно для самостоятельного микса цвета в графе.
-   - **Inputs:** `V` (Float, из Split по Position(OS).G), `AOStrength` (Float)
+6. **(opt.) Custom Function `GrassBlade_Masks`** — separate AO and tip-mask outputs (instead of the pre-mixed `ColorBase`). Useful for mixing color yourself in the graph.
+   - **Inputs:** `V` (Float, from a Split on Position(OS).G), `AOStrength` (Float)
    - **Outputs:** `AO` (Float), `TipMask` (Float)
 
-   Типичная разводка цвета:
+   A typical color wiring:
 
    ```
    GrassType_Color ─┐
@@ -438,23 +438,23 @@ RGBA-текстура размером с террейн (или меньше �
                                      GrassTint ┘  (Color property)
    ```
 
-   При этой схеме **не** подключать `ColorBase` из первой ноды в Base Color, иначе AO/TipBoost умножатся дважды.
+   With this scheme do **not** connect `ColorBase` from the first node into Base Color, otherwise AO/TipBoost get multiplied twice.
 
-7. Создать Material из графа, назначить в `GrassTerrain`. После проверки `GrassBlade.shader` можно удалить.
+7. Create a Material from the graph, assign it in `GrassTerrain`. After verifying, `GrassBlade.shader` can be deleted.
 
-ShaderGraph автоматически генерирует ShadowCaster и DepthOnly проходы.
+ShaderGraph automatically generates the ShadowCaster and DepthOnly passes.
 
 ---
 
-## 🔌 Расширение
+## 🔌 Extending
 
-**Взаимодействие персонажа (примятие):**
-- В `GrassWind` добавить `Vector4 _GrassImpactSource` (xyz = world pos, w = radius).
-- В `GrassBlade.shader` / `GrassBladeGraph.hlsl` добавить отклонение `blade.position` в зависимости от `dist(worldPos, impact)`.
-- Из кода каждый кадр: `Shader.SetGlobalVector("_GrassImpactSource", ...)`.
+**Character interaction (trampling):**
+- In `GrassWind` add `Vector4 _GrassImpactSource` (xyz = world pos, w = radius).
+- In `GrassBlade.shader` / `GrassBladeGraph.hlsl` add a deflection of `blade.position` based on `dist(worldPos, impact)`.
+- From code each frame: `Shader.SetGlobalVector("_GrassImpactSource", ...)`.
 
-**Streaming больших миров (несколько террейнов):**
-- `GrassRenderer` — один на террейн. Если мир делится на 10×10 terrain-тайлов → ставить `GrassTerrain` на каждый, они не мешают друг другу.
+**Streaming large worlds (multiple terrains):**
+- `GrassRenderer` — one per terrain. If the world is split into 10×10 terrain tiles → put a `GrassTerrain` on each, they do not interfere with one another.
 
-**Другой формат маски / источник density:**
-- В `GrassCompute.compute` править `SampleGrassMask` и переинтерпретацию каналов в `CSGenerate` (placement / heightMul / densityMul).
+**Different mask format / density source:**
+- In `GrassCompute.compute` edit `SampleGrassMask` and the channel reinterpretation in `CSGenerate` (placement / heightMul / densityMul).
