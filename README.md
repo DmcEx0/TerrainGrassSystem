@@ -30,7 +30,7 @@ https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem
 или вручную в `Packages/manifest.json` проекта:
 
 ```json
-"com.terraingrasssystem.grass": "https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem"
+"com.terraingrasssystem.grass": "https://github.com/DmcEx0/TerrainGrassSystem.git?path=/Assets/TerrainGrassSystem",
 ```
 
 ---
