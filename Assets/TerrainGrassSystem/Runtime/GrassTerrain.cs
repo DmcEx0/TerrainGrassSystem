@@ -7,6 +7,7 @@ namespace TerrainGrassSystem
     // heightmap is sampled by the compute shader to keep grass attached to the
     // surface; grass placement is masked by the user-supplied grass mask and
     // varied by the user-supplied clump noise.
+    [DefaultExecutionOrder(10000)]
     [ExecuteAlways]
     [RequireComponent(typeof(Terrain))]
     [AddComponentMenu("TerrainGrassSystem/Grass/Grass Terrain")]
@@ -249,10 +250,11 @@ namespace TerrainGrassSystem
             // Build planes from the actual projection*view matrix instead of
             // cam.cullingMatrix. URP can override cullingMatrix, and on
             // non-default aspect ratios (ultra-wide game view, custom Screen
-            // sizes) the override does not always match what is rendered —
-            // entire tiles disappear/pop near screen edges.
+            // sizes) the override does not always match what is rendered.
+            // A small guard band keeps grass ready just outside the screen
+            // when camera movement happens late in the frame.
             GeometryUtility.CalculateFrustumPlanes(
-                cam.projectionMatrix * cam.worldToCameraMatrix, _frustumPlaneBuffer);
+                GrassRenderer.CalculateCullingMatrix(cam, Settings.FrustumPaddingDegrees), _frustumPlaneBuffer);
 
             Vector3 camPos = cam.transform.position;
             float tileCullDistSq = Settings.TileCullDistance * Settings.TileCullDistance;

@@ -200,6 +200,37 @@ namespace TerrainGrassSystem
             SubmitDraw(_lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
+        internal static Matrix4x4 CalculateCullingMatrix(Camera cam, float frustumPaddingDegrees)
+        {
+            var projection = cam.projectionMatrix;
+
+            if (!cam.orthographic)
+                projection = ExpandPerspectiveProjection(projection, frustumPaddingDegrees);
+
+            return projection * cam.worldToCameraMatrix;
+        }
+
+        static Matrix4x4 ExpandPerspectiveProjection(Matrix4x4 projection, float paddingDegrees)
+        {
+            float paddingRad = Mathf.Clamp(paddingDegrees, 0f, 40f) * Mathf.Deg2Rad;
+            if (paddingRad <= 1e-5f) return projection;
+
+            projection.m00 = ExpandProjectionAxis(projection.m00, paddingRad);
+            projection.m11 = ExpandProjectionAxis(projection.m11, paddingRad);
+            return projection;
+        }
+
+        static float ExpandProjectionAxis(float projectionScale, float paddingRad)
+        {
+            float absScale = Mathf.Abs(projectionScale);
+            if (absScale <= 1e-5f) return projectionScale;
+
+            float sign = projectionScale < 0f ? -1f : 1f;
+            float halfAngle = Mathf.Atan(1f / absScale);
+            float paddedHalfAngle = Mathf.Min(halfAngle + paddingRad, 89f * Mathf.Deg2Rad);
+            return sign / Mathf.Tan(paddedHalfAngle);
+        }
+
         void BindCommonComputeInputs(in FrameInput input)
         {
             var settings = input.Settings;
@@ -253,7 +284,7 @@ namespace TerrainGrassSystem
             // matrix — see GrassTerrain.CollectVisibleTiles for why
             // cam.cullingMatrix is unreliable on non-default aspect ratios.
             var planes = GeometryUtility.CalculateFrustumPlanes(
-                cam.projectionMatrix * cam.worldToCameraMatrix);
+                CalculateCullingMatrix(cam, settings.FrustumPaddingDegrees));
             for (int i = 0; i < 6; ++i)
             {
                 _frustumPlanes[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);

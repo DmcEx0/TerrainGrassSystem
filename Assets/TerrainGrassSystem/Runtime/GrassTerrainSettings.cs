@@ -21,6 +21,9 @@ namespace TerrainGrassSystem
         [Tooltip("Per-blade max distance. Blades beyond this are dropped on the GPU.")]
         [Min(2f)] public float MaxBladeDistance = 60f;
 
+        [Tooltip("Extra perspective-frustum angle generated outside the visible screen. Prevents side bald strips when the camera turns quickly or is finalized after grass culling. 0 = exact frustum.")]
+        [Range(0f, 20f)] public float FrustumPaddingDegrees = 8f;
+
         [Header("LOD")]
         [Tooltip("Blades closer than this are rendered with the high LOD mesh.")]
         [Min(0f)] public float HighLodDistance = 18f;
