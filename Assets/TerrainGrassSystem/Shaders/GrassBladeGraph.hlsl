@@ -199,6 +199,9 @@ void GrassBlade_VertexBillboard_float(
     float3 toCamera  = normalize(cameraWS - blade.position);
     float3 toCamFlat = normalize(toCamera - up * dot(toCamera, up) + float3(1e-6, 0, 0));
     float3 right     = normalize(cross(toCamFlat, up));
+    // Camera-independent right for normals: mirrors what HighLOD produces
+    // (cross(rRight, tangentWS) ≈ facing when rRight = cross(up, facing)).
+    float3 rightN    = normalize(cross(facing, up));
 
     float  h        = blade.height * blade.lodBlend;
     float  wAtV     = blade.width * (1.0 - v * 0.75);
@@ -208,8 +211,8 @@ void GrassBlade_VertexBillboard_float(
 
     float3 tLocal      = _GrassBladeBezierTangent(v, h, blade.tiltAngle, blade.bend);
     float3 tangentWS   = normalize(up * tLocal.y + facing * tLocal.z);
-    float3 bladeNormal = normalize(cross(right, tangentWS));
-    float3 curved      = normalize(lerp(bladeNormal, right * sign(side + 1e-4), CurvedNAmt * abs(side)));
+    float3 bladeNormal = normalize(cross(tangentWS, rightN));
+    float3 curved      = normalize(lerp(bladeNormal, rightN * sign(side + 1e-4), CurvedNAmt * abs(side)));
 
     #if defined(SHADERPASS) && \
         ((SHADERPASS == SHADERPASS_DEPTHNORMALSONLY) || \
