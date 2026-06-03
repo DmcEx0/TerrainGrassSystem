@@ -439,20 +439,6 @@
         {
             "m_OutputSlot": {
                 "m_Node": {
-                    "m_Id": "4b56e6c4546d4f3b94a46ace36da13a9"
-                },
-                "m_SlotId": 2
-            },
-            "m_InputSlot": {
-                "m_Node": {
-                    "m_Id": "b3fe1b0afd0848eead1fa344e983aa88"
-                },
-                "m_SlotId": 0
-            }
-        },
-        {
-            "m_OutputSlot": {
-                "m_Node": {
                     "m_Id": "51623fa487c14b6eb022d6b77f5ceece"
                 },
                 "m_SlotId": 0
@@ -4152,8 +4138,8 @@
     "m_ObjectId": "9fdda3d6bdbc4073a7af424334a7ff74",
     "m_Title": "NormalMap",
     "m_Position": {
-        "x": -88.0,
-        "y": -1125.0
+        "x": -88.00006103515625,
+        "y": -1126.39990234375
     }
 }
 
@@ -4473,7 +4459,7 @@
     "m_ZTestMode": 4,
     "m_ZWriteControl": 1,
     "m_AlphaMode": 0,
-    "m_RenderFace": 1,
+    "m_RenderFace": 2,
     "m_AlphaClip": false,
     "m_CastShadows": false,
     "m_ReceiveShadows": false,
