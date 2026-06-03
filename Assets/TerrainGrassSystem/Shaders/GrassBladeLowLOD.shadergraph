@@ -1834,7 +1834,7 @@
     "m_Group": {
         "m_Id": ""
     },
-    "m_Name": "GrassBlade_Vertex (Custom Function)",
+    "m_Name": "GrassBlade_VertexBillboard (Custom Function)",
     "m_DrawState": {
         "m_Expanded": true,
         "m_Position": {
@@ -1892,7 +1892,7 @@
         "m_SerializableColors": []
     },
     "m_SourceType": 0,
-    "m_FunctionName": "GrassBlade_Vertex",
+    "m_FunctionName": "GrassBlade_VertexBillboard",
     "m_FunctionSource": "de413a8806ce75e42aac25fa5957e991",
     "m_FunctionSourceUsePragmas": true,
     "m_FunctionBody": "Enter function body here..."
@@ -4152,8 +4152,8 @@
     "m_ObjectId": "9fdda3d6bdbc4073a7af424334a7ff74",
     "m_Title": "NormalMap",
     "m_Position": {
-        "x": -87.99994659423828,
-        "y": -1125.0001220703125
+        "x": -88.0,
+        "y": -1125.0
     }
 }
 
@@ -4473,7 +4473,7 @@
     "m_ZTestMode": 4,
     "m_ZWriteControl": 1,
     "m_AlphaMode": 0,
-    "m_RenderFace": 2,
+    "m_RenderFace": 1,
     "m_AlphaClip": false,
     "m_CastShadows": false,
     "m_ReceiveShadows": false,

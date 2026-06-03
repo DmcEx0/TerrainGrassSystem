@@ -157,6 +157,77 @@ void GrassBlade_Vertex_float(
     UV         = float2(side * 0.5 + 0.5, v);
 }
 
+// --- Billboard Vertex Custom Function ---------------------------------------
+//
+// Drop-in replacement for GrassBlade_Vertex_float used in GrassBladeLowLOD.
+// The single-triangle LowLOD mesh is too coarse for the per-cross-section twist
+// used by HighLOD: the tip vertex (side=0) has no width contribution and for
+// upright blades curve.z≈0, so the Rodrigues twist has no effect on actual
+// vertex positions. The correct approach for a single triangle is to set
+// right = cross(up, toCamFlat) — the width axis is always perpendicular to the
+// camera, guaranteeing the face normal points toward it. The blade's own facing
+// is kept for the tilt/lean geometry so each stalk retains its natural pose.
+// Same parameter signature as GrassBlade_Vertex_float (CamFacingT and
+// CamFacingMaxA are accepted but unused).
+void GrassBlade_VertexBillboard_float(
+    float3 PositionOS,
+    float  InstanceID,
+    float  CamFacingT,
+    float  CamFacingMaxA,
+    float  CurvedNAmt,
+    float  AOStrength,
+    float  TipBoost,
+    out float3 PositionWS,
+    out float3 NormalWS,
+    out float3 ColorBase,
+    out float2 UV)
+{
+    uint id = (uint)InstanceID;
+    GrassBlade blade = _GrassBlades[id];
+
+    float side = PositionOS.x;
+    float v    = PositionOS.y;
+
+    float3 up     = normalize(blade.normalUp);
+    float3 facing = normalize(blade.facing - up * dot(blade.facing, up));
+    ApplyBladeFold(v, facing, up, blade);
+
+    // Billboard: drive the width axis from the camera direction so the triangle
+    // face always points at the viewer. The tilt/lean still uses the blade's own
+    // facing so stalks keep their original natural pose.
+    float3 cameraWS  = _WorldSpaceCameraPos.xyz;
+    float3 toCamera  = normalize(cameraWS - blade.position);
+    float3 toCamFlat = normalize(toCamera - up * dot(toCamera, up) + float3(1e-6, 0, 0));
+    float3 right     = normalize(cross(up, toCamFlat));
+
+    float  h        = blade.height * blade.lodBlend;
+    float  wAtV     = blade.width * (1.0 - v * 0.75);
+    float3 curve    = _GrassBladeBezier(v, h, blade.tiltAngle, blade.bend);
+    float3 localPos = facing * curve.z + up * curve.y + right * (side * 0.5 * wAtV);
+    float3 worldPos = blade.position + localPos + ApplyGrassWind(blade.windBase, v);
+
+    float3 tLocal      = _GrassBladeBezierTangent(v, h, blade.tiltAngle, blade.bend);
+    float3 tangentWS   = normalize(up * tLocal.y + facing * tLocal.z);
+    float3 bladeNormal = normalize(cross(right, tangentWS));
+    float3 curved      = normalize(lerp(bladeNormal, right * sign(side + 1e-4), CurvedNAmt * abs(side)));
+
+    #if defined(SHADERPASS) && \
+        ((SHADERPASS == SHADERPASS_DEPTHNORMALSONLY) || \
+         (SHADERPASS == SHADERPASS_DEPTHNORMALS))
+        float3 outNormalWS = up;
+    #else
+        float3 outNormalWS = curved;
+    #endif
+
+    float  aoFactor = lerp(1.0 - AOStrength, 1.0, v);
+    float3 color    = blade.color * aoFactor * lerp(1.0, TipBoost, v);
+
+    PositionWS = worldPos;
+    NormalWS   = outNormalWS;
+    ColorBase  = color;
+    UV         = float2(side * 0.5 + 0.5, v);
+}
+
 // --- Masks Custom Function --------------------------------------------------
 //
 // Separate from GrassBlade_Vertex_float so the existing graph stays intact.
