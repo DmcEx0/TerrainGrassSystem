@@ -198,7 +198,7 @@ void GrassBlade_VertexBillboard_float(
     float3 cameraWS  = _WorldSpaceCameraPos.xyz;
     float3 toCamera  = normalize(cameraWS - blade.position);
     float3 toCamFlat = normalize(toCamera - up * dot(toCamera, up) + float3(1e-6, 0, 0));
-    float3 right     = normalize(cross(up, toCamFlat));
+    float3 right     = normalize(cross(toCamFlat, up));
 
     float  h        = blade.height * blade.lodBlend;
     float  wAtV     = blade.width * (1.0 - v * 0.75);
