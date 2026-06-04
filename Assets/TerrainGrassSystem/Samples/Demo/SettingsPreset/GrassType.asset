@@ -12,22 +12,22 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a79569ad376f1584baad62c907f0844b, type: 3}
   m_Name: GrassType
   m_EditorClassIdentifier: TerrainGrassSystem.Grass::TerrainGrassSystem.GrassType
-  BaseHeight: 1.47
-  HeightVariance: 0
-  HeightRandomness: 0
-  BaseWidth: 0.06
-  WidthVariance: 0.03
+  BaseHeight: 0.8
+  HeightVariance: 0.4
+  HeightRandomness: 0.2
+  BaseWidth: 0.04
+  WidthVariance: 0.02
   WidthHeightCoupling: 0.581
-  BaseTilt: -0.6
-  TiltVariance: 0.39
+  BaseTilt: -0.4
+  TiltVariance: 0.1
   SlopeFollow: 0
-  FacingVariance: 1
-  FacingRandomness: 0.063
+  FacingVariance: 3
+  FacingRandomness: 0.05
   Bend: 0
   DensityMultiplier: 1
   MaxBladesPerCell: 16
   FoldHeight: 0
-  SmallBladeHeight: 0.2
-  WindHeightFalloff: 1
+  SmallBladeHeight: 0.1
+  WindHeightFalloff: 0.75
   BaseColor: {r: 0.18, g: 0.35, b: 0.1, a: 1}
   TipColor: {r: 0.55, g: 0.78, b: 0.3, a: 1}

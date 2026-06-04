@@ -87,23 +87,27 @@ Material:
     m_Ints: []
     m_Floats:
     - _: 0.953
-    - _1: 0.76
-    - _2: -0.13
+    - _1: 1.36
+    - _2: -0.75
+    - _3: 0.9
+    - _4: -0.5
     - _AOStrength: 0
+    - _AO_Intensity: 0.5
+    - _AO_Strength: 0.9
     - _AddPrecomputedVelocity: 0
     - _AlphaClip: 0
     - _AlphaToMask: 0
     - _Blend: 0
     - _BlendModePreserveSpecular: 1
     - _BumpScale: 1
-    - _CamFacingMaxA: -15.3
+    - _CamFacingMaxA: 25
     - _CamFacingStrength: 0.75
     - _CamFacingT: 1
     - _CamFacingThreshold: 0.35
     - _ClearCoatMask: 0
     - _ClearCoatSmoothness: 0
     - _Cull: 2
-    - _CurvedNAmt: 0.35
+    - _CurvedNAmt: 0.6
     - _CurvedNormalAmount: 0.7
     - _Cutoff: 0.5
     - _DetailAlbedoMapScale: 1
@@ -122,6 +126,8 @@ Material:
     - _QueueControl: 0
     - _QueueOffset: 0
     - _ReceiveShadows: 1
+    - _Smooth_Intensity: 0
+    - _Smooth_Strength: 0.5
     - _Smoothness: 0.5
     - _SmoothnessTextureChannel: 0
     - _SpecularHighlights: 1
@@ -132,21 +138,26 @@ Material:
     - _Surface: 0
     - _SwapTextureToColor: 0
     - _TipBoost: 1
+    - _Tips_Intensity: 0.2
+    - _Tips_Strength: 0.9
     - _WorkflowMode: 1
     - _XRMotionVectorsPass: 1
     - _ZWrite: 1
-    - __1: -0.39
-    - _nm: 0.5
-    - _nm_1: -1
+    - __1: -0.4
+    - _nm: 0.8
+    - _nm_1: 0.4
     m_Colors:
+    - _AO_Color: {r: 0, g: 0, b: 0, a: 1}
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _BaseColorMultiplier: {r: 1, g: 1, b: 1, a: 1}
+    - _Base_Color: {r: 0.31247222, g: 0.443, b: 0.238777, a: 1}
     - _Color: {r: 0.5203252, g: 1, b: 0, a: 1}
     - _Color_1: {r: 0.3086144, g: 0.3584906, b: 0.21813814, a: 1}
     - _Color_spec: {r: 0.764151, g: 0.45525444, b: 0.36405307, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
     - _TipsColor: {r: 0.39645118, g: 0.5377358, b: 0.1445799, a: 1}
+    - _Tips_Color: {r: 0.6166992, g: 0.7660377, b: 0.17199706, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &8200823532709078842

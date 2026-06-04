@@ -12,12 +12,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0aff7a4f98917374d933915f566b2f75, type: 3}
   m_Name: GrassTerrainSettings
   m_EditorClassIdentifier: TerrainGrassSystem.Grass::TerrainGrassSystem.GrassTerrainSettings
-  TileSize: 11.47
+  TileSize: 10
   BladesPerTileAxis: 135
   TileCullDistance: 130
   MaxBladeDistance: 150
-  HighLodDistance: 10.23
-  LodBlendBand: 18.34
+  FrustumPaddingDegrees: 8
+  HighLodDistance: 4.1
+  LodBlendBand: 25
   ThinningStartDistance: 30
   ThinningStrength: 1
   ClumpScale: 0
