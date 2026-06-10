@@ -52,7 +52,6 @@ namespace TerrainGrassSystem
         static readonly int s_BakedBladesId        = Shader.PropertyToID("_BakedBlades");
         static readonly int s_BakeCounterId        = Shader.PropertyToID("_BakeCounter");
         static readonly int s_BakedCapacityId      = Shader.PropertyToID("_BakedCapacity");
-        static readonly int s_BakedCountId         = Shader.PropertyToID("_BakedCount");
 
         readonly ComputeShader _compute;
         readonly Material      _highMaterial;
@@ -216,11 +215,21 @@ namespace TerrainGrassSystem
                 _compute.Dispatch(_bakeKernel, (int)groupCount, (int)groupCount, 1);
             }
 
-            // One-time blocking readback to get the blade count for CSCull dispatch sizing.
-            _bakeCounter.GetData(_bakeCounterData);
-            _bakedCount = Mathf.Min((int)_bakeCounterData[0], settings.MaxBakedBlades);
-
-            Debug.Log($"[GrassRenderer] Baked {_bakedCount:N0} blades (capacity {settings.MaxBakedBlades:N0})");
+            if (Application.isPlaying)
+            {
+                // Play mode: one-time blocking readback so Render() dispatches
+                // the exact number of groups needed (no wasted threads).
+                _bakeCounter.GetData(_bakeCounterData);
+                _bakedCount = Mathf.Min((int)_bakeCounterData[0], settings.MaxBakedBlades);
+                Debug.Log($"[GrassRenderer] Baked {_bakedCount:N0} blades (capacity {settings.MaxBakedBlades:N0})");
+            }
+            else
+            {
+                // Edit mode: skip the GPU sync to avoid hitching while the user
+                // drags sliders. Render() will dispatch for the full capacity and
+                // CSCull reads the actual count from _BakeCounter[0] on the GPU.
+                _bakedCount = settings.MaxBakedBlades;
+            }
         }
 
         public void Render(in FrameInput input)
@@ -322,11 +331,11 @@ namespace TerrainGrassSystem
             var settings = input.Settings;
             var cam      = input.Camera;
 
-            _compute.SetBuffer(_cullKernel, s_BakedBladesId, _bakedBlades);
-            _compute.SetBuffer(_cullKernel, s_BladesHighId,  _bladesHigh);
-            _compute.SetBuffer(_cullKernel, s_BladesLowId,   _bladesLow);
-            _compute.SetBuffer(_cullKernel, s_GrassTypeId,   _grassType);
-            _compute.SetInt(s_BakedCountId, _bakedCount);
+            _compute.SetBuffer(_cullKernel, s_BakedBladesId,  _bakedBlades);
+            _compute.SetBuffer(_cullKernel, s_BakeCounterId,  _bakeCounter); // CSCull reads counter on GPU
+            _compute.SetBuffer(_cullKernel, s_BladesHighId,   _bladesHigh);
+            _compute.SetBuffer(_cullKernel, s_BladesLowId,    _bladesLow);
+            _compute.SetBuffer(_cullKernel, s_GrassTypeId,    _grassType);
 
             // Wind
             bool windOn = input.WindEnabled && input.WindNoise != null;

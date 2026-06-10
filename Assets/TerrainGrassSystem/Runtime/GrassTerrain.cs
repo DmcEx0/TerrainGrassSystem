@@ -46,9 +46,10 @@ namespace TerrainGrassSystem
         bool _bakeDirty;
 
         // Snapshot of inspector references that trigger a bake when they change.
-        Texture2D  _bakeSnapshotMask;
-        Texture2D  _bakeSnapshotNoise;
-        GrassType  _bakeSnapshotType;
+        Texture2D         _bakeSnapshotMask;
+        Texture2D         _bakeSnapshotNoise;
+        GrassType         _bakeSnapshotType;
+        GrassTypeParamsGpu _bakeSnapshotTypeParams; // value-compare to catch SO field edits
 
         // Snapshot of inspector fields that affect buffer allocation.
         GrassTerrainSettings _validateSettings;
@@ -115,7 +116,7 @@ namespace TerrainGrassSystem
             _validateLowMat   = LowLodMaterial;
         }
 
-        void MarkBakeDirty()
+        public void MarkBakeDirty()
         {
             _bakeDirty = true;
         }
@@ -129,9 +130,13 @@ namespace TerrainGrassSystem
             _renderer.UploadGrassType(Type);
 
             // Detect changes to bake-relevant assets and trigger a re-bake.
+            // Reference checks catch asset swaps; value check on GrassType params
+            // catches inspector field edits (height, color, density, etc.) on the
+            // same SO without needing a separate OnValidate callback.
             if (!ReferenceEquals(_bakeSnapshotMask,  GrassMask)  ||
                 !ReferenceEquals(_bakeSnapshotNoise, ClumpNoise) ||
-                !ReferenceEquals(_bakeSnapshotType,  Type))
+                !ReferenceEquals(_bakeSnapshotType,  Type)       ||
+                (Type != null && !Type.ToGpu().Equals(_bakeSnapshotTypeParams)))
             {
                 MarkBakeDirty();
             }
@@ -175,9 +180,10 @@ namespace TerrainGrassSystem
 
         void CaptureBakeSnapshot()
         {
-            _bakeSnapshotMask  = GrassMask;
-            _bakeSnapshotNoise = ClumpNoise;
-            _bakeSnapshotType  = Type;
+            _bakeSnapshotMask        = GrassMask;
+            _bakeSnapshotNoise       = ClumpNoise;
+            _bakeSnapshotType        = Type;
+            _bakeSnapshotTypeParams  = Type != null ? Type.ToGpu() : default;
         }
 
         bool ValidateConfig()
