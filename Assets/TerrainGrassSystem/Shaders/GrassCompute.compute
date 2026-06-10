@@ -3,6 +3,8 @@
 
 #pragma kernel CSGenerate
 #pragma kernel CSBuildArgs
+#pragma kernel CSBake
+#pragma kernel CSCull
 
 #include "GrassCommon.hlsl"
 
@@ -10,6 +12,13 @@
 
 AppendStructuredBuffer<GrassBlade> _BladesHigh;
 AppendStructuredBuffer<GrassBlade> _BladesLow;
+
+// ---- Persistent bake buffers ------------------------------------------------
+// CSBake writes here once; CSCull reads every frame.
+RWStructuredBuffer<GrassBlade> _BakedBlades;
+RWStructuredBuffer<uint>       _BakeCounter;
+uint                           _BakedCapacity; // set to MaxBakedBlades before CSBake dispatch
+uint                           _BakedCount;    // set to actual blade count before CSCull dispatch
 
 // Indirect args layout for Graphics.RenderMeshIndirect — 5 uints per command
 // (stride 20 bytes). Bind via RWStructuredBuffer<IndirectArgs> so the stride
@@ -440,6 +449,200 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
             if (inHigh)            { b.lodBlend = highBlend; b.windBase = windHigh; _BladesHigh.Append(b); }
             if (inLow && keepLow)  { b.lodBlend = lowBlend;  b.windBase = windLow;  _BladesLow.Append(b); }
         }
+    }
+}
+
+// ---- CSBake -----------------------------------------------------------------
+//
+// Run ONCE for every tile on the terrain (not just visible tiles) when grass
+// data needs to be regenerated: on init, terrain/mask/type changes. Identical
+// blade-generation logic to CSGenerate but without any camera-dependent work
+// (no frustum cull, no distance cull, no LOD routing, no wind). Produces a
+// stable blade list that CSCull processes cheaply every frame.
+
+[numthreads(8, 8, 1)]
+void CSBake(uint3 id : SV_DispatchThreadID)
+{
+    uint2 gridSize = _GridSizeCounts.xy;
+    if (id.x >= gridSize.x || id.y >= gridSize.y) return;
+
+    uint hash = Hash2(id.xy + uint2(_TileOriginSize.xy * 31.0));
+
+    float2 j    = HashToFloat2(hash) - 0.5;
+    float  ang  = HashToFloat(WangHash(hash ^ 0x9E3779B9u)) * 6.2831853;
+    float  ca   = cos(ang), sa = sin(ang);
+    float2 jrot = float2(j.x * ca - j.y * sa, j.x * sa + j.y * ca);
+    float2 cellUV = (float2(id.xy) + 0.5 + jrot * 1.5) / float2(gridSize);
+
+    float2 worldXZ = _TileOriginSize.xy + cellUV * _TileOriginSize.zw;
+
+    float worldY = SampleTerrainHeight(worldXZ);
+    if (worldY < -1e8) return;
+
+    float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
+
+    float4 mask     = SampleGrassMask(worldXZ);
+    float placement = mask.r;
+    float heightMul = mask.g;
+    float lushness  = mask.b;
+
+    if (placement < 0.01) return;
+
+    GrassTypeParams gt = _GrassType[0];
+
+    float3 bladeUp = normalize(lerp(float3(0.0, 1.0, 0.0), terrainN, saturate(gt.slopeFollow)));
+
+    float densityProb = placement * gt.densityMultiplier;
+    if (HashToFloat(hash ^ 0xA53Bu) > densityProb) return;
+
+    float clumpScale = _CullParams.w;
+    float2 noiseUV   = worldXZ * clumpScale;
+    float4 clump     = _ClumpNoise.SampleLevel(sampler_LinearRepeat, noiseUV, 0);
+
+    float heightSignal = clump.r * 2.0 - 1.0;
+    float colorSignal  = clump.g;
+
+    float dirNoise   = clump.b * 6.2831853;
+    float dirRandom  = HashToFloat(hash ^ 0xD9u) * 6.2831853;
+    float dirBase    = lerp(dirNoise, dirRandom, saturate(gt.facingRandomness));
+    float dirJitter  = (HashToFloat(hash ^ 0xC5u) - 0.5) * 2.0 * gt.facingVariance;
+    float dirSignal  = dirBase + dirJitter;
+
+    float heightJitter    = (HashToFloat(hash ^ 0xE7u) - 0.5) * 2.0 * gt.heightRandomness;
+    float lushHeightBoost = 1.0 + lushness * 0.25;
+    float bladeHeight = max(0.05, (gt.baseHeight + heightSignal * gt.heightVariance + heightJitter) * heightMul * lushHeightBoost);
+    float bladeWidth  = max(0.005, gt.baseWidth + (HashToFloat(hash ^ 0x55u) - 0.5) * 2.0 * gt.widthVariance);
+    float bladeTilt   = gt.baseTilt + (HashToFloat(hash ^ 0x71u) - 0.5) * 2.0 * gt.tiltVariance;
+    float3 bladeColor = lerp(gt.baseColor, gt.tipColor, colorSignal) * (1.0 + lushness * 0.20);
+    float3 worldPos   = float3(worldXZ.x, worldY, worldXZ.y);
+
+    uint  maxBlades   = max(1u, (uint)gt.maxBladesPerCell);
+    float avgBlades   = lerp(1.5, (float)maxBlades, lushness);
+    float bladeJitter = HashToFloat(WangHash(hash ^ 0xBEEFu));
+    uint  totalBlades = clamp((uint)floor(avgBlades + bladeJitter), 1u, maxBlades);
+
+    float bladeWidthBase = bladeWidth;
+    float invBaseHeight  = 1.0 / max(0.01, gt.baseHeight);
+    float widthCoupling  = saturate(gt.widthHeightCoupling);
+    float foldCutoff     = gt.foldHeight;
+    bool  foldingEnabled = foldCutoff > 1e-4;
+
+    GrassBlade b;
+    b.bend  = gt.bend;
+    b.color = bladeColor;
+    b.width = bladeWidthBase;
+
+    for (uint ti = 0u; ti < totalBlades; ++ti)
+    {
+        bool  isBase = (ti == 0u);
+        uint  bhash  = isBase ? hash : WangHash(hash ^ (0x9E3779B9u + ti * 0xC0FFEEu));
+
+        float2 off  = isBase ? float2(0.0, 0.0) : (HashToFloat2(bhash) - 0.5) * 0.04;
+        float3 bpos = worldPos + float3(off.x, 0.0, off.y);
+
+        float bhJit = isBase ? heightJitter : (HashToFloat(bhash ^ 0xE7u) - 0.5) * 2.0 * gt.heightRandomness;
+        float bh    = max(0.05, (gt.baseHeight + heightSignal * gt.heightVariance + bhJit) * heightMul * lushHeightBoost);
+        float btilt = isBase ? bladeTilt : gt.baseTilt + (HashToFloat(bhash ^ 0x71u) - 0.5) * 2.0 * gt.tiltVariance;
+
+        float bdir = isBase ? dirSignal : HashToFloat(bhash ^ 0xD9u) * 6.2831853;
+        float bfx, bfz; sincos(bdir, bfz, bfx);
+
+        float foldJitter = (HashToFloat(bhash ^ 0xF01Du) - 0.5) * 0.1 * foldCutoff;
+        bool  isFolded   = foldingEnabled && (bh < (foldCutoff + foldJitter));
+
+        float widthScale = lerp(1.0, bh * invBaseHeight, widthCoupling);
+        float bw         = max(0.005, bladeWidthBase * widthScale);
+
+        b.position  = bpos;
+        b.tiltAngle = btilt;
+        b.height    = bh;
+        b.width     = bw;
+        b.hash      = bhash;
+        b.facing    = float3(bfx, 0.0, bfz);
+        b.typeIndex = isFolded ? 1u : 0u;
+        b.normalUp  = bladeUp;
+        b.lodBlend  = 0.0;  // filled by CSCull
+        b.windBase  = 0.0;  // filled by CSCull
+
+        uint writeIdx;
+        InterlockedAdd(_BakeCounter[0], 1u, writeIdx);
+        if (writeIdx < _BakedCapacity)
+            _BakedBlades[writeIdx] = b;
+    }
+}
+
+// ---- CSCull -----------------------------------------------------------------
+//
+// Runs every frame in a single 1-D dispatch over the entire baked blade list.
+// Applies frustum + distance cull, LOD routing, wind, and distance thinning —
+// all the camera-dependent work that CSBake skipped. Feeds the same
+// _BladesHigh / _BladesLow append buffers the existing draw calls consume,
+// so the rest of the render pipeline (CSBuildArgs, RenderMeshIndirect) is
+// unchanged.
+
+[numthreads(64, 1, 1)]
+void CSCull(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _BakedCount) return;
+    GrassBlade b = _BakedBlades[id.x];
+
+    float3 bladeCenter = b.position + float3(0.0, b.height * 0.5, 0.0);
+    float  bladeRadius = max(b.height, b.width) * 0.6 + 0.05;
+
+    if (_DisableFrustumCull == 0u && !SphereInFrustum(bladeCenter, bladeRadius)) return;
+
+    float3 toCam  = bladeCenter - _CameraPos.xyz;
+    float  distSq = dot(toCam, toCam);
+    if (distSq > _CullParams.x) return;
+
+    float dist       = sqrt(distSq);
+    float highCutoff = _CullParams.y;
+    float blendBand  = max(0.001, _CullParams.z);
+    float halfBand   = blendBand * 0.5;
+    float maxDist    = sqrt(_CullParams.x);
+
+    bool  inHigh    = dist <= highCutoff + halfBand;
+    bool  inLow     = dist >= highCutoff - halfBand;
+    float highBlend = saturate((highCutoff + halfBand - dist) / blendBand);
+    float lowFadeIn  = saturate((dist - (highCutoff - halfBand)) / blendBand);
+    float lowFadeOut = saturate((maxDist - dist) / blendBand);
+    float lowBlend   = lowFadeIn * lowFadeOut;
+
+    float thinStart    = _ThinningParams.x;
+    float thinStrength = _ThinningParams.y;
+    float thinT        = saturate((dist - thinStart) / max(0.001, maxDist - thinStart));
+    float thinKeep     = 1.0 - thinStrength * thinT;
+    bool  keepLow      = HashToFloat(b.hash ^ 0x7A11u) <= thinKeep;
+
+    GrassTypeParams gt = _GrassType[0];
+    bool isFolded = (b.typeIndex & 1u) != 0u;
+    bool forceLow = !isFolded && (gt.smallBladeHeight > 0.0) && (b.height < gt.smallBladeHeight);
+
+    float windHigh, windLow;
+    ComputeWindBases(b.position.xz, b.hash,
+                     !forceLow && inHigh,
+                     keepLow && (forceLow || inLow),
+                     windHigh, windLow);
+
+    float invBaseHeight   = 1.0 / max(0.01, gt.baseHeight);
+    float windHeightRatio = saturate(b.height * invBaseHeight);
+    float windAtten = lerp(1.0, windHeightRatio * windHeightRatio, saturate(gt.windHeightFalloff));
+    windHigh *= windAtten;
+    windLow  *= windAtten;
+
+    if (forceLow)
+    {
+        if (keepLow)
+        {
+            b.lodBlend = lowFadeOut;
+            b.windBase = windLow;
+            _BladesLow.Append(b);
+        }
+    }
+    else
+    {
+        if (inHigh)           { b.lodBlend = highBlend; b.windBase = windHigh; _BladesHigh.Append(b); }
+        if (inLow && keepLow) { b.lodBlend = lowBlend;  b.windBase = windLow;  _BladesLow.Append(b);  }
     }
 }
 

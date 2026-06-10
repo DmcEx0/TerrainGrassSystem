@@ -1,16 +1,24 @@
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace TerrainGrassSystem
 {
     // Core renderer. One of these is owned by each GrassTerrain.
-    // - Allocates GPU buffers
-    // - Each frame: resets counters, dispatches CSGenerate for visible tiles,
-    //   populates indirect args, and submits two RenderMeshIndirect calls
-    //   (one per LOD).
     //
-    // The renderer does not read back from the GPU; everything is GPU-resident.
+    // Architecture (baked path):
+    //   Bake()  - called once on init and whenever grass data changes.
+    //             Dispatches CSBake for every terrain tile; stores all placed
+    //             blades in _bakedBlades (persistent GPU buffer). One-time GPU
+    //             sync to read back the blade count.
+    //
+    //   Render() - called every frame. Dispatches the lightweight CSCull kernel
+    //              over the entire baked list: frustum + distance + LOD + wind.
+    //              Writes the visible subset into _bladesHigh / _bladesLow, then
+    //              submits the two RenderMeshIndirect calls — unchanged from the
+    //              original path.
+    //
+    // The legacy CSGenerate path (per-tile, per-frame) is kept in the compute
+    // shader but is no longer called from C#.
     public sealed class GrassRenderer : System.IDisposable
     {
         // ---- Shader IDs ----
@@ -40,7 +48,11 @@ namespace TerrainGrassSystem
         static readonly int s_WindParamsId         = Shader.PropertyToID("_GrassWindParams");
         static readonly int s_WindDirectionId      = Shader.PropertyToID("_GrassWindDirection");
         static readonly int s_WindEnabledId        = Shader.PropertyToID("_GrassWindEnabled");
-        static readonly int s_ThinningParamsId      = Shader.PropertyToID("_ThinningParams");
+        static readonly int s_ThinningParamsId     = Shader.PropertyToID("_ThinningParams");
+        static readonly int s_BakedBladesId        = Shader.PropertyToID("_BakedBlades");
+        static readonly int s_BakeCounterId        = Shader.PropertyToID("_BakeCounter");
+        static readonly int s_BakedCapacityId      = Shader.PropertyToID("_BakedCapacity");
+        static readonly int s_BakedCountId         = Shader.PropertyToID("_BakedCount");
 
         readonly ComputeShader _compute;
         readonly Material      _highMaterial;
@@ -49,24 +61,36 @@ namespace TerrainGrassSystem
         readonly Mesh          _lowMesh;
         readonly int           _highIndexCount;
         readonly int           _lowIndexCount;
-        readonly int           _generateKernel;
+        readonly int           _bakeKernel;
+        readonly int           _cullKernel;
         readonly int           _buildArgsKernel;
 
+        // Per-frame visibility append buffers (written by CSCull, consumed by draw).
         readonly GraphicsBuffer _bladesHigh;
         readonly GraphicsBuffer _bladesLow;
         readonly GraphicsBuffer _argsHigh;
         readonly GraphicsBuffer _argsLow;
         readonly GraphicsBuffer _countHigh;
         readonly GraphicsBuffer _countLow;
+
+        // Persistent bake buffer (written once by CSBake, read every frame by CSCull).
+        readonly GraphicsBuffer _bakedBlades;
+        readonly GraphicsBuffer _bakeCounter;
+        readonly uint[]         _bakeCounterData  = new uint[1];
+        readonly uint[]         _bakeCounterClear = new uint[1]; // always {0}
+
+        // Number of blades stored in _bakedBlades. Set after Bake() via CPU readback.
+        int _bakedCount;
+
         readonly GraphicsBuffer _grassType;
 
-        readonly Vector4[] _frustumPlanes = new Vector4[6];
+        readonly Vector4[]           _frustumPlanes = new Vector4[6];
         readonly MaterialPropertyBlock _mpbHigh = new();
         readonly MaterialPropertyBlock _mpbLow  = new();
 
-        public Bounds RenderBounds = new Bounds(Vector3.zero, Vector3.one * 1000f);
-        public ShadowCastingMode ShadowMode = ShadowCastingMode.On;
-        public bool ReceiveShadows = true;
+        public Bounds            RenderBounds = new Bounds(Vector3.zero, Vector3.one * 1000f);
+        public ShadowCastingMode ShadowMode   = ShadowCastingMode.On;
+        public bool              ReceiveShadows = true;
 
         public GrassRenderer(
             ComputeShader compute,
@@ -83,7 +107,8 @@ namespace TerrainGrassSystem
             _highIndexCount = GrassBladeMesh.IndexCountFor(_highMesh);
             _lowIndexCount  = GrassBladeMesh.IndexCountFor(_lowMesh);
 
-            _generateKernel  = _compute.FindKernel("CSGenerate");
+            _bakeKernel      = _compute.FindKernel("CSBake");
+            _cullKernel      = _compute.FindKernel("CSCull");
             _buildArgsKernel = _compute.FindKernel("CSBuildArgs");
 
             _bladesHigh = new GraphicsBuffer(
@@ -103,22 +128,24 @@ namespace TerrainGrassSystem
             _countHigh = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
             _countLow  = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
 
+            _bakedBlades = new GraphicsBuffer(
+                GraphicsBuffer.Target.Structured,
+                settings.MaxBakedBlades, GrassBlade.SizeBytes);
+            _bakeCounter = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
+
             _grassType = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
                 1, GrassTypeParamsGpu.SizeBytes);
         }
 
         readonly GrassTypeParamsGpu[] _grassTypeStaging = new GrassTypeParamsGpu[1];
 
-        // Safe to call every frame — the staging array is reused and the GPU
-        // buffer is 80 bytes. Lets art tweaks on the GrassType ScriptableObject
-        // show up live without rebuilding anything.
         public void UploadGrassType(GrassType type)
         {
             _grassTypeStaging[0] = type != null ? type.ToGpu() : default;
             _grassType.SetData(_grassTypeStaging);
         }
 
-        // Tile descriptor — the GrassTerrain pushes a list per frame.
+        // Tile descriptor used by both BakeInput and FrameInput.
         public readonly struct Tile
         {
             public readonly Vector2 OriginXZ;
@@ -126,67 +153,101 @@ namespace TerrainGrassSystem
             public Tile(Vector2 origin, Vector2 size) { OriginXZ = origin; SizeXZ = size; }
         }
 
-        // Per-frame data the GrassTerrain hands over.
-        public struct FrameInput
+        // Input for the one-time bake. Contains everything needed for blade
+        // generation but nothing camera-dependent.
+        public struct BakeInput
         {
-            public Camera Camera;
             public Texture TerrainHeightmap;
             public Texture GrassMask;
             public Texture ClumpNoise;
             public Vector3 TerrainOrigin;
             public Vector3 TerrainSize;
             public GrassTerrainSettings Settings;
-            public IReadOnlyList<Tile> VisibleTiles;
+            public int TilesX;
+            public int TilesZ;
+        }
 
-            // Wind, sampled per-blade in the compute pass. WindEnabled is false
-            // when no GrassWind component exists — blades then get zero sway.
+        // Per-frame data the GrassTerrain hands over.
+        public struct FrameInput
+        {
+            public Camera  Camera;
+            public Texture ClumpNoise; // used as fallback for wind texture slot when wind is off
+            public GrassTerrainSettings Settings;
+
             public bool    WindEnabled;
             public Texture WindNoise;
             public Vector4 WindParams;
             public Vector4 WindDirection;
         }
 
-        public void Render(in FrameInput input)
+        // Bake all blades for the entire terrain into the persistent buffer.
+        // This must be called before the first Render() and re-called whenever
+        // the terrain data (mask, type, heightmap) changes.
+        // Contains one blocking GPU readback — acceptable as a one-time cost.
+        public void Bake(in BakeInput input)
         {
-            if (input.Camera == null) return;
             if (input.TerrainHeightmap == null || input.GrassMask == null || input.ClumpNoise == null) return;
-            if (input.VisibleTiles == null || input.VisibleTiles.Count == 0)
-            {
-                // Even with no tiles we must zero the indirect args, otherwise
-                // we'd render the previous frame's instance count.
-                ResetArgsToZero();
-                return;
-            }
+            if (input.Settings == null) return;
 
-            // 1) Reset blade counters.
-            _bladesHigh.SetCounterValue(0);
-            _bladesLow.SetCounterValue(0);
+            // Reset the atomic counter before the dispatch.
+            _bakeCounterClear[0] = 0u;
+            _bakeCounter.SetData(_bakeCounterClear);
 
-            // 2) Prepare globals shared across all tile dispatches.
-            BindCommonComputeInputs(input);
+            BindBakeInputs(input);
 
-            // 3) Per-tile compute dispatch.
             var settings = input.Settings;
             uint axis = (uint)settings.BladesPerTileAxis;
             const uint threadGroupSize = 8;
             uint groupCount = (axis + threadGroupSize - 1) / threadGroupSize;
 
-            for (int i = 0; i < input.VisibleTiles.Count; ++i)
+            // Dispatch for EVERY tile (not just visible), so the baked buffer
+            // covers the full terrain and CSCull can cull freely each frame.
+            for (int z = 0; z < input.TilesZ; ++z)
+            for (int x = 0; x < input.TilesX; ++x)
             {
-                var tile = input.VisibleTiles[i];
-                _compute.SetVector(s_TileOriginSizeId,
-                    new Vector4(tile.OriginXZ.x, tile.OriginXZ.y, tile.SizeXZ.x, tile.SizeXZ.y));
-                _compute.SetInts(s_GridSizeCountsId,
-                    settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
-                _compute.Dispatch(_generateKernel, (int)groupCount, (int)groupCount, 1);
+                float ox = input.TerrainOrigin.x + x * settings.TileSize;
+                float oz = input.TerrainOrigin.z + z * settings.TileSize;
+                float sx = Mathf.Min(settings.TileSize, input.TerrainOrigin.x + input.TerrainSize.x - ox);
+                float sz = Mathf.Min(settings.TileSize, input.TerrainOrigin.z + input.TerrainSize.z - oz);
+                if (sx <= 0f || sz <= 0f) continue;
+
+                _compute.SetVector(s_TileOriginSizeId, new Vector4(ox, oz, sx, sz));
+                _compute.SetInts(s_GridSizeCountsId, settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
+                _compute.Dispatch(_bakeKernel, (int)groupCount, (int)groupCount, 1);
             }
 
-            // 4) Copy append-buffer counts into the small uint buffers the args
-            //    kernel reads.
+            // One-time blocking readback to get the blade count for CSCull dispatch sizing.
+            _bakeCounter.GetData(_bakeCounterData);
+            _bakedCount = Mathf.Min((int)_bakeCounterData[0], settings.MaxBakedBlades);
+
+            Debug.Log($"[GrassRenderer] Baked {_bakedCount:N0} blades (capacity {settings.MaxBakedBlades:N0})");
+        }
+
+        public void Render(in FrameInput input)
+        {
+            if (input.Camera == null) return;
+            if (_bakedCount <= 0)
+            {
+                ResetArgsToZero();
+                return;
+            }
+
+            // 1) Reset per-frame visibility append buffers.
+            _bladesHigh.SetCounterValue(0);
+            _bladesLow.SetCounterValue(0);
+
+            // 2) Bind CSCull inputs and dispatch over the entire baked blade list.
+            BindCullInputs(input);
+
+            const int cullGroupSize = 64;
+            int groups = (_bakedCount + cullGroupSize - 1) / cullGroupSize;
+            _compute.Dispatch(_cullKernel, groups, 1, 1);
+
+            // 3) Copy append-buffer counts into the uint buffers the args kernel reads.
             GraphicsBuffer.CopyCount(_bladesHigh, _countHigh, 0);
             GraphicsBuffer.CopyCount(_bladesLow,  _countLow,  0);
 
-            // 5) Build indirect args on the GPU.
+            // 4) Build indirect args on the GPU.
             _compute.SetBuffer(_buildArgsKernel, s_IndirectArgsHighId, _argsHigh);
             _compute.SetBuffer(_buildArgsKernel, s_IndirectArgsLowId,  _argsLow);
             _compute.SetBuffer(_buildArgsKernel, s_CountHighId,        _countHigh);
@@ -195,18 +256,18 @@ namespace TerrainGrassSystem
             _compute.SetInt   (s_IndexCountLowId,  _lowIndexCount);
             _compute.Dispatch(_buildArgsKernel, 1, 1, 1);
 
-            // 6) Submit indirect draws — one per LOD.
+            // 5) Submit indirect draws — one per LOD.
             SubmitDraw(_highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
             SubmitDraw(_lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
+        // ---- Culling matrix helpers (unchanged from original) ----------------
+
         internal static Matrix4x4 CalculateCullingMatrix(Camera cam, float frustumPaddingDegrees)
         {
             var projection = cam.projectionMatrix;
-
             if (!cam.orthographic)
                 projection = ExpandPerspectiveProjection(projection, frustumPaddingDegrees);
-
             return projection * cam.worldToCameraMatrix;
         }
 
@@ -214,7 +275,6 @@ namespace TerrainGrassSystem
         {
             float paddingRad = Mathf.Clamp(paddingDegrees, 0f, 40f) * Mathf.Deg2Rad;
             if (paddingRad <= 1e-5f) return projection;
-
             projection.m00 = ExpandProjectionAxis(projection.m00, paddingRad);
             projection.m11 = ExpandProjectionAxis(projection.m11, paddingRad);
             return projection;
@@ -224,40 +284,57 @@ namespace TerrainGrassSystem
         {
             float absScale = Mathf.Abs(projectionScale);
             if (absScale <= 1e-5f) return projectionScale;
-
             float sign = projectionScale < 0f ? -1f : 1f;
             float halfAngle = Mathf.Atan(1f / absScale);
             float paddedHalfAngle = Mathf.Min(halfAngle + paddingRad, 89f * Mathf.Deg2Rad);
             return sign / Mathf.Tan(paddedHalfAngle);
         }
 
-        void BindCommonComputeInputs(in FrameInput input)
+        // ---- Compute input binding ------------------------------------------
+
+        void BindBakeInputs(in BakeInput input)
         {
             var settings = input.Settings;
-            var cam = input.Camera;
 
-            // Compute-kernel resources.
-            _compute.SetBuffer (_generateKernel, s_BladesHighId,       _bladesHigh);
-            _compute.SetBuffer (_generateKernel, s_BladesLowId,        _bladesLow);
-            _compute.SetBuffer (_generateKernel, s_GrassTypeId,        _grassType);
-            _compute.SetTexture(_generateKernel, s_TerrainHeightmapId, input.TerrainHeightmap);
-            _compute.SetTexture(_generateKernel, s_GrassMaskId,        input.GrassMask);
-            _compute.SetTexture(_generateKernel, s_ClumpNoiseId,       input.ClumpNoise);
-
-            // Wind (sampled per-blade in CSGenerate). Always bind a valid texture
-            // to the slot — fall back to the clump noise when wind is off so the
-            // dispatch never has an unbound resource, even though the sample is
-            // gated out by _GrassWindEnabled.
-            bool windOn = input.WindEnabled && input.WindNoise != null;
-            _compute.SetInt(s_WindEnabledId, windOn ? 1 : 0);
-            _compute.SetTexture(_generateKernel, s_WindNoiseId, windOn ? input.WindNoise : input.ClumpNoise);
-            _compute.SetVector(s_WindParamsId,    input.WindParams);
-            _compute.SetVector(s_WindDirectionId, input.WindDirection);
+            _compute.SetBuffer (_bakeKernel, s_BakedBladesId,      _bakedBlades);
+            _compute.SetBuffer (_bakeKernel, s_BakeCounterId,       _bakeCounter);
+            _compute.SetInt    (s_BakedCapacityId,                  settings.MaxBakedBlades);
+            _compute.SetBuffer (_bakeKernel, s_GrassTypeId,         _grassType);
+            _compute.SetTexture(_bakeKernel, s_TerrainHeightmapId,  input.TerrainHeightmap);
+            _compute.SetTexture(_bakeKernel, s_GrassMaskId,         input.GrassMask);
+            _compute.SetTexture(_bakeKernel, s_ClumpNoiseId,        input.ClumpNoise);
 
             _compute.SetVector(s_TerrainOriginId,
                 new Vector4(input.TerrainOrigin.x, input.TerrainOrigin.y, input.TerrainOrigin.z, 0f));
             _compute.SetVector(s_TerrainSizeId,
                 new Vector4(input.TerrainSize.x, input.TerrainSize.y, input.TerrainSize.z, 0f));
+
+            // _CullParams.w = clumpScale is needed by CSBake for noise UV.
+            _compute.SetVector(s_CullParamsId, new Vector4(
+                settings.ComputeMaxDistanceSq(),
+                settings.HighLodDistance,
+                settings.LodBlendBand,
+                settings.ClumpScale));
+        }
+
+        void BindCullInputs(in FrameInput input)
+        {
+            var settings = input.Settings;
+            var cam      = input.Camera;
+
+            _compute.SetBuffer(_cullKernel, s_BakedBladesId, _bakedBlades);
+            _compute.SetBuffer(_cullKernel, s_BladesHighId,  _bladesHigh);
+            _compute.SetBuffer(_cullKernel, s_BladesLowId,   _bladesLow);
+            _compute.SetBuffer(_cullKernel, s_GrassTypeId,   _grassType);
+            _compute.SetInt(s_BakedCountId, _bakedCount);
+
+            // Wind
+            bool windOn = input.WindEnabled && input.WindNoise != null;
+            _compute.SetInt(s_WindEnabledId, windOn ? 1 : 0);
+            _compute.SetTexture(_cullKernel, s_WindNoiseId,
+                windOn ? input.WindNoise : input.ClumpNoise);  // fall back to clump to avoid unbound slot
+            _compute.SetVector(s_WindParamsId,    input.WindParams);
+            _compute.SetVector(s_WindDirectionId, input.WindDirection);
 
             _compute.SetVector(s_CullParamsId, new Vector4(
                 settings.ComputeMaxDistanceSq(),
@@ -265,10 +342,6 @@ namespace TerrainGrassSystem
                 settings.LodBlendBand,
                 settings.ClumpScale));
 
-            // Distance thinning. x = start distance, y = strength (0..1). The
-            // ramp ends at the max blade distance (sqrt of _CullParams.x in the
-            // shader), so beyond `start` low-LOD blades drop out toward the
-            // horizon. High LOD is never thinned.
             _compute.SetVector(s_ThinningParamsId, new Vector4(
                 settings.ThinningStartDistance,
                 Mathf.Clamp01(settings.ThinningStrength),
@@ -280,20 +353,13 @@ namespace TerrainGrassSystem
                 cam.transform.position.z,
                 Time.time));
 
-            // Frustum planes in (n.xyz, d) form. Use the actual projection*view
-            // matrix — see GrassTerrain.CollectVisibleTiles for why
-            // cam.cullingMatrix is unreliable on non-default aspect ratios.
             var planes = GeometryUtility.CalculateFrustumPlanes(
                 CalculateCullingMatrix(cam, settings.FrustumPaddingDegrees));
             for (int i = 0; i < 6; ++i)
-            {
-                _frustumPlanes[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);
-            }
+                _frustumPlanes[i] = new Vector4(
+                    planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);
             _compute.SetVectorArray(s_FrustumPlanesId, _frustumPlanes);
 
-            // In edit mode (Scene View only) we generate blades regardless of
-            // frustum so authors can see grass behind / beside the camera
-            // while painting. In play mode we always cull.
             _compute.SetInt(s_DisableFrustumCullId, Application.isPlaying ? 0 : 1);
         }
 
@@ -317,7 +383,6 @@ namespace TerrainGrassSystem
             Graphics.RenderMeshIndirect(rp, mesh, args, 1);
         }
 
-        // Zero the args so a stale instanceCount cannot leak into a frame with no tiles.
         readonly uint[] _zeroArgs = new uint[5];
         void ResetArgsToZero()
         {
@@ -333,6 +398,8 @@ namespace TerrainGrassSystem
             _argsLow?.Dispose();
             _countHigh?.Dispose();
             _countLow?.Dispose();
+            _bakedBlades?.Dispose();
+            _bakeCounter?.Dispose();
             _grassType?.Dispose();
 
             if (Application.isPlaying)

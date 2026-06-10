@@ -47,6 +47,8 @@ namespace TerrainGrassSystem
         [Min(1024)] public int MaxHighLodBlades = 600_000;
         [Tooltip("Maximum blades the low-LOD buffer can hold across all tiles in a frame.")]
         [Min(1024)] public int MaxLowLodBlades  = 800_000;
+        [Tooltip("Maximum blades stored in the persistent baked buffer (all placed blades across the whole terrain). Must be >= total placed blades. Increase if grass disappears at full density.")]
+        [Min(1024)] public int MaxBakedBlades   = 2_000_000;
 
         public float ComputeMaxDistanceSq()
         {
