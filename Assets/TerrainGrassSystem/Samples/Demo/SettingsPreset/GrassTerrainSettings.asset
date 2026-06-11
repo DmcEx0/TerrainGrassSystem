@@ -18,7 +18,7 @@ MonoBehaviour:
   MaxBladeDistance: 150
   FrustumPaddingDegrees: 8
   HighLodDistance: 4.1
-  LodBlendBand: 25
+  LodBlendBand: 8
   ThinningStartDistance: 30
   ThinningStrength: 1
   ClumpScale: 0

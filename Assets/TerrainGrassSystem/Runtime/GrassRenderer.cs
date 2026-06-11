@@ -144,6 +144,10 @@ namespace TerrainGrassSystem
             public Texture WindNoise;
             public Vector4 WindParams;
             public Vector4 WindDirection;
+
+            // Frustum planes pre-computed by GrassTerrain so BindCommonComputeInputs
+            // does not recompute the culling matrix a second time this frame.
+            public Plane[] FrustumPlanes;
         }
 
         public void Render(in FrameInput input)
@@ -280,11 +284,7 @@ namespace TerrainGrassSystem
                 cam.transform.position.z,
                 Time.time));
 
-            // Frustum planes in (n.xyz, d) form. Use the actual projection*view
-            // matrix — see GrassTerrain.CollectVisibleTiles for why
-            // cam.cullingMatrix is unreliable on non-default aspect ratios.
-            var planes = GeometryUtility.CalculateFrustumPlanes(
-                CalculateCullingMatrix(cam, settings.FrustumPaddingDegrees));
+            var planes = input.FrustumPlanes;
             for (int i = 0; i < 6; ++i)
             {
                 _frustumPlanes[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);

@@ -184,16 +184,14 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
 
     float2 worldXZ = _TileOriginSize.xy + cellUV * _TileOriginSize.zw;
 
+    // XZ-only distance pre-cull before any texture fetch — cheaply rejects
+    // blades beyond the max draw distance using only arithmetic.
+    float2 toCamXZ = worldXZ - _CameraPos.xz;
+    if (dot(toCamXZ, toCamXZ) > _CullParams.x) return;
+
     // Terrain height + bail if blade falls off the heightmap.
     float worldY = SampleTerrainHeight(worldXZ);
     if (worldY < -1e8) return;
-
-    // Surface normal at the blade root, blended toward world-up by the
-    // GrassType's slopeFollow (0 = always vertical, 1 = perpendicular to
-    // terrain). Computed once per blade and stored on the struct so the
-    // render shader doesn't need terrain access.
-    float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
-    // slopeFollow ramped after we sample gt below.
 
     // Mask channels:
     //   R = placement / density gate (0..1). Drives whether grass exists in
@@ -213,9 +211,6 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     if (placement < 0.01) return;
 
     GrassTypeParams gt = _GrassType[0];
-
-    // Now blend the terrain normal with world-up using the type's setting.
-    float3 bladeUp = normalize(lerp(float3(0.0, 1.0, 0.0), terrainN, saturate(gt.slopeFollow)));
 
     // Density: only the placement channel and the GrassType's own multiplier.
     // B is intentionally absent — it would otherwise tie tufting (Clamp tool)
@@ -272,6 +267,11 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     float distSq = dot(toCam, toCam);
     float maxDistSq = _CullParams.x;
     if (distSq > maxDistSq) return;
+
+    // Surface normal deferred past all culls — only reached by blades that
+    // passed placement, density, frustum, and distance checks.
+    float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
+    float3 bladeUp = normalize(lerp(float3(0.0, 1.0, 0.0), terrainN, saturate(gt.slopeFollow)));
 
     float dist = sqrt(distSq);
     float highCutoff = _CullParams.y;

@@ -29,7 +29,7 @@ namespace TerrainGrassSystem
         [Min(0f)] public float HighLodDistance = 4.1f;
 
         [Tooltip("Width of the cross-fade band around lod transitions and the max distance. Bigger = softer, more overdraw.")]
-        [Min(0.1f)] public float LodBlendBand = 25f;
+        [Min(0.1f)] public float LodBlendBand = 8f;
 
         [Header("Distance Thinning")]
         [Tooltip("Distance from the camera at which grass starts to thin out. Blades closer than this are never thinned (high LOD is never touched either).")]

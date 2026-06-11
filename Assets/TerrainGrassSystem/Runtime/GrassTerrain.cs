@@ -134,6 +134,13 @@ namespace TerrainGrassSystem
             var cam = ResolveCamera();
             if (cam == null) return;
 
+            // Use our own projection*view matrix instead of cam.cullingMatrix —
+            // URP can override cullingMatrix and on non-default aspect ratios it
+            // may not match what is rendered. Computed once and shared with both
+            // CollectVisibleTiles and the compute shader via FrameInput.
+            GeometryUtility.CalculateFrustumPlanes(
+                GrassRenderer.CalculateCullingMatrix(cam, Settings.FrustumPaddingDegrees), _frustumPlaneBuffer);
+
             CollectVisibleTiles(cam);
 
             // Wind is optional. Re-find when missing (it may be added/removed or
@@ -155,6 +162,7 @@ namespace TerrainGrassSystem
                 WindNoise        = hasWind ? _wind.ActiveNoise : null,
                 WindParams       = hasWind ? _wind.ActiveParams : Vector4.zero,
                 WindDirection    = hasWind ? _wind.ActiveDirection : new Vector4(1f, 0f, 0f, 0f),
+                FrustumPlanes    = _frustumPlaneBuffer,
             });
         }
 
@@ -247,15 +255,6 @@ namespace TerrainGrassSystem
         void CollectVisibleTiles(Camera cam)
         {
             _visibleTiles.Clear();
-            // Build planes from the actual projection*view matrix instead of
-            // cam.cullingMatrix. URP can override cullingMatrix, and on
-            // non-default aspect ratios (ultra-wide game view, custom Screen
-            // sizes) the override does not always match what is rendered.
-            // A small guard band keeps grass ready just outside the screen
-            // when camera movement happens late in the frame.
-            GeometryUtility.CalculateFrustumPlanes(
-                GrassRenderer.CalculateCullingMatrix(cam, Settings.FrustumPaddingDegrees), _frustumPlaneBuffer);
-
             Vector3 camPos = cam.transform.position;
             float tileCullDistSq = Settings.TileCullDistance * Settings.TileCullDistance;
 
