@@ -310,8 +310,6 @@ namespace TerrainGrassSystem.Editor
 
             mask.Apply(updateMipmaps: false, makeNoLongerReadable: false);
             _strokeDirty = true;
-
-            terrain.GetComponent<GrassTerrain>()?.MarkBakeDirty();
         }
 
         // Returns a CPU-readable copy of the given brush texture, blitting it
@@ -476,14 +474,6 @@ namespace TerrainGrassSystem.Editor
             mask.Apply(updateMipmaps: false, makeNoLongerReadable: false);
             System.IO.File.WriteAllBytes(snap.maskPath, mask.EncodeToPNG());
             AssetDatabase.ImportAsset(snap.maskPath);
-
-            // Notify all GrassTerrain components that reference this mask.
-            foreach (var gt in Object.FindObjectsByType<GrassTerrain>(FindObjectsSortMode.None))
-            {
-                if (gt.GrassMask != null &&
-                    AssetDatabase.GetAssetPath(gt.GrassMask) == snap.maskPath)
-                    gt.MarkBakeDirty();
-            }
         }
 
         // ---- Mask file housekeeping ------------------------------------------

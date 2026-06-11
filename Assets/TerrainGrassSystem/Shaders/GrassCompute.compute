@@ -18,6 +18,7 @@ AppendStructuredBuffer<GrassBlade> _BladesLow;
 RWStructuredBuffer<GrassBlade> _BakedBlades;
 RWStructuredBuffer<uint>       _BakeCounter;
 uint                           _BakedCapacity; // set to MaxBakedBlades before CSBake dispatch
+uint                           _BakedCount;    // set to actual blade count before CSCull dispatch
 
 // Indirect args layout for Graphics.RenderMeshIndirect — 5 uints per command
 // (stride 20 bytes). Bind via RWStructuredBuffer<IndirectArgs> so the stride
@@ -582,10 +583,7 @@ void CSBake(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void CSCull(uint3 id : SV_DispatchThreadID)
 {
-    // _BakeCounter[0] is the exact count written by CSBake — avoids a CPU
-    // readback while remaining correct even when dispatch is over-provisioned
-    // (e.g., editor mode dispatches ceil(MaxBakedBlades/64) groups).
-    if (id.x >= _BakeCounter[0]) return;
+    if (id.x >= _BakedCount) return;
     GrassBlade b = _BakedBlades[id.x];
 
     float3 bladeCenter = b.position + float3(0.0, b.height * 0.5, 0.0);
