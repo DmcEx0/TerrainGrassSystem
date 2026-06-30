@@ -10,6 +10,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
         _AOStrength          ("Bottom AO",            Range(0.0, 1.0)) = 0.5
         _SpecularPower       ("Specular Power",       Range(1.0, 256.0)) = 32.0
         _SpecularStrength    ("Specular Strength",    Range(0.0, 1.0)) = 0.15
+        _InteractionMaxPush  ("Interaction Strength", Range(0.0, 2.0)) = 0.5
     }
 
     SubShader
@@ -45,6 +46,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
             #include "GrassCommon.hlsl"
             #include "GrassWind.hlsl"
+            #include "GrassInteraction.hlsl"
 
             StructuredBuffer<GrassBlade> _GrassBlades;
             int _GrassLodSegments;   // 3 for high LOD, 1 for low LOD
@@ -58,6 +60,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 half  _AOStrength;
                 half  _SpecularPower;
                 half  _SpecularStrength;
+                half  _InteractionMaxPush;
             CBUFFER_END
 
             struct Attributes
@@ -165,7 +168,8 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 float3 localPos = rFacing * curve.z + up * curve.y + rRight * sideOffset;
 
                 float3 worldPos = blade.position + localPos
-                                + ApplyGrassWind(blade.windBase, v);
+                                + ApplyGrassWind(blade.windBase, v)
+                                + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
 
                 // Curved fake normals using the rotated basis and a world-space
                 // tangent — keeps lighting consistent with the geometry twist.
@@ -238,6 +242,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
             #include "GrassCommon.hlsl"
             #include "GrassWind.hlsl"
+            #include "GrassInteraction.hlsl"
 
             StructuredBuffer<GrassBlade> _GrassBlades;
 
@@ -252,6 +257,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 half  _AOStrength;
                 half  _SpecularPower;
                 half  _SpecularStrength;
+                half  _InteractionMaxPush;
             CBUFFER_END
 
             float3 BezierBlade(float t, float h, float tilt, float bend)
@@ -318,7 +324,8 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 float3 curve = BezierBlade(v, h, blade.tiltAngle, blade.bend);
                 float3 localPos = rFacing * curve.z + up * curve.y + rRight * (side * 0.5 * wAtV);
                 float3 worldPos = blade.position + localPos
-                                + ApplyGrassWind(blade.windBase, v);
+                                + ApplyGrassWind(blade.windBase, v)
+                                + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
 
                 float3 lightDirWS = _MainLightPosition.xyz;
                 float3 normalWS = up;
@@ -356,6 +363,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "GrassCommon.hlsl"
             #include "GrassWind.hlsl"
+            #include "GrassInteraction.hlsl"
 
             StructuredBuffer<GrassBlade> _GrassBlades;
 
@@ -368,6 +376,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 half  _AOStrength;
                 half  _SpecularPower;
                 half  _SpecularStrength;
+                half  _InteractionMaxPush;
             CBUFFER_END
 
             float3 BezierBlade(float t, float h, float tilt, float bend)
@@ -433,7 +442,8 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 float3 curve = BezierBlade(v, h, blade.tiltAngle, blade.bend);
                 float3 worldPos = blade.position
                     + rFacing * curve.z + up * curve.y + rRight * (side * 0.5 * wAtV)
-                    + ApplyGrassWind(blade.windBase, v);
+                    + ApplyGrassWind(blade.windBase, v)
+                    + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
 
                 return TransformWorldToHClip(worldPos);
             }

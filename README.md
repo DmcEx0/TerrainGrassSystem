@@ -58,15 +58,18 @@ TerrainGrassSystem/
 │   ├── GrassTerrainSettings.cs         ScriptableObject of tile/LOD settings
 │   ├── GrassBladeMesh.cs               unit-mesh generation for the two LODs
 │   ├── GrassWind.cs                    wind component
+│   ├── GrassInteractionSource.cs       marks a transform as a grass-pusher
+│   ├── GrassInteractionManager.cs      collects sources, pushes data to GPU
 │   ├── GrassRenderer.cs                core: buffers, indirect draw
 │   └── GrassTerrain.cs                 wrapper component for Unity Terrain
 │
 ├── Shaders/
 │   ├── GrassCommon.hlsl                structs and helpers (shared)
-│   ├── GrassWind.hlsl                  wind sampling
+│   ├── GrassWind.hlsl                  wind sampling + GrassWind_Apply graph node
+│   ├── GrassInteraction.hlsl           collider push + GrassInteraction_Apply graph node
 │   ├── GrassCompute.compute            CSGenerate + CSBuildArgs
 │   ├── GrassBlade.shader               URP HLSL shader (default working one)
-│   └── GrassBladeGraph.hlsl            Custom Function for ShaderGraph
+│   └── GrassBladeGraph.hlsl            Custom Function nodes for ShaderGraph
 │
 └── Editor/                             (asmdef: TerrainGrassSystem.Grass.Editor)
     ├── GrassNoiseGenerator.cs          noise & mask generation window
@@ -472,6 +475,49 @@ For the LowLOD graph use `GrassBlade_VertexBillboard` instead of `GrassBlade_Ver
 8. Create a Material from the graph, assign it in `GrassTerrain`. After verifying, `GrassBlade.shader` can be deleted.
 
 ShaderGraph automatically generates the ShadowCaster and DepthOnly passes.
+
+---
+
+## 🌾 Grass interaction (colliders)
+
+Grass bends away from any moving object — player, cubes, capsules, anything with a collider.
+
+### Scene setup
+
+1. **Add `GrassInteractionManager`** to any single GameObject in the scene (e.g. the terrain root). It pushes up to **8 sources** to the GPU every `LateUpdate`.
+2. **Add `GrassInteractionSource`** to each object that should push the grass. Set **Radius** to match the object's approximate footprint:
+
+   | Object type | Suggested Radius |
+   |---|---|
+   | Player capsule (r=0.3 m) | `0.5` |
+   | Small cube (1×1 m) | `0.7` |
+   | Large enemy | `1.0–1.5` |
+
+3. **Adjust `Interaction Strength`** (`_InteractionMaxPush`) on the grass material — this is the maximum tip displacement in metres when a blade is at the exact centre of a source. Default: `0.5 m`.
+
+> Both components are plain MonoBehaviours; there is no requirement for actual Unity Collider components — just add `GrassInteractionSource` to any moving transform.
+
+### ShaderGraph wiring (if using GrassBladeGraph.hlsl)
+
+Add a **third** Custom Function node: Mode = File, Source = `GrassInteraction.hlsl`, Name = `GrassInteraction_Apply`.
+
+| | |
+|---|---|
+| **Inputs** | `BladeRootWS` (Vector3) — from the new `BladeRootWS` output of `GrassBlade_Vertex` |
+| | `V` (Float) — Split(Position OS).G, same node as for wind |
+| | `MaxPush` (Float) — exposed property, default `0.5` |
+| **Output** | `InteractionOffset` (Vector3) |
+
+Final vertex position wiring:
+
+```
+GrassBlade_Vertex.PositionWS ──┐
+                               ├─ Add ──┐
+GrassWind_Apply.WindOffset   ──┘        ├─ Add ──► Vertex Position
+GrassInteraction_Apply.InteractionOffset┘
+```
+
+To disable interaction: remove the node and skip the second Add.
 
 ---
 

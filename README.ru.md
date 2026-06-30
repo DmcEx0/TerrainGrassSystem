@@ -58,15 +58,18 @@ TerrainGrassSystem/
 │   ├── GrassTerrainSettings.cs         ScriptableObject настроек тайлов/LOD
 │   ├── GrassBladeMesh.cs               генерация unit-mesh для двух LOD
 │   ├── GrassWind.cs                    компонент ветра
+│   ├── GrassInteractionSource.cs       помечает трансформ как источник взаимодействия
+│   ├── GrassInteractionManager.cs      собирает источники, пушит данные на GPU
 │   ├── GrassRenderer.cs                ядро: буферы, indirect draw
 │   └── GrassTerrain.cs                 компонент-обвязка для Unity Terrain
 │
 ├── Shaders/
 │   ├── GrassCommon.hlsl                структуры и хелперы (общие)
-│   ├── GrassWind.hlsl                  семплинг ветра
+│   ├── GrassWind.hlsl                  семплинг ветра + нода GrassWind_Apply
+│   ├── GrassInteraction.hlsl           отгибание от коллайдеров + нода GrassInteraction_Apply
 │   ├── GrassCompute.compute            CSGenerate + CSBuildArgs
 │   ├── GrassBlade.shader               URP HLSL-шейдер (рабочий по умолчанию)
-│   └── GrassBladeGraph.hlsl            Custom Function для ShaderGraph
+│   └── GrassBladeGraph.hlsl            Custom Function ноды для ShaderGraph
 │
 └── Editor/                             (asmdef: TerrainGrassSystem.Grass.Editor)
     ├── GrassNoiseGenerator.cs          окно генерации шума и маски
@@ -472,6 +475,49 @@ RGBA-текстура размером с террейн (или меньше �
 8. Создать Material из графа, назначить в `GrassTerrain`. После проверки `GrassBlade.shader` можно удалить.
 
 ShaderGraph автоматически генерирует ShadowCaster и DepthOnly проходы.
+
+---
+
+## 🌾 Интерактивная трава (коллайдеры)
+
+Трава отгибается от любого движущегося объекта — игрока, кубов, капсул и т.п.
+
+### Настройка сцены
+
+1. **Добавьте `GrassInteractionManager`** на любой один GameObject в сцене (например, на объект террейна). Он пушит в GPU до **8 источников** каждый `LateUpdate`.
+2. **Добавьте `GrassInteractionSource`** на каждый объект, который должен отгибать траву. Поставьте **Radius** по размеру объекта:
+
+   | Тип объекта | Рекомендованный Radius |
+   |---|---|
+   | Капсула игрока (r=0.3 м) | `0.5` |
+   | Маленький куб (1×1 м) | `0.7` |
+   | Крупный враг | `1.0–1.5` |
+
+3. **Настройте `Interaction Strength`** (`_InteractionMaxPush`) на материале травы — это максимальное смещение кончика травинки в метрах при нахождении прямо в центре источника. По умолчанию: `0.5 м`.
+
+> Оба компонента — обычные MonoBehaviour, Unity Collider на объекте не требуется — достаточно `GrassInteractionSource` на любом трансформе.
+
+### Подключение в ShaderGraph (при использовании GrassBladeGraph.hlsl)
+
+Добавьте **третью** Custom Function ноду: Mode = File, Source = `GrassInteraction.hlsl`, Name = `GrassInteraction_Apply`.
+
+| | |
+|---|---|
+| **Inputs** | `BladeRootWS` (Vector3) — новый выход `BladeRootWS` ноды `GrassBlade_Vertex` |
+| | `V` (Float) — Split(Position OS).G, та же нода что и для ветра |
+| | `MaxPush` (Float) — exposed property, по умолчанию `0.5` |
+| **Output** | `InteractionOffset` (Vector3) |
+
+Итоговая разводка позиции вершины:
+
+```
+GrassBlade_Vertex.PositionWS ──┐
+                               ├─ Add ──┐
+GrassWind_Apply.WindOffset   ──┘        ├─ Add ──► Vertex Position
+GrassInteraction_Apply.InteractionOffset┘
+```
+
+Чтобы отключить интерактивность: удалите ноду и уберите второй Add.
 
 ---
 

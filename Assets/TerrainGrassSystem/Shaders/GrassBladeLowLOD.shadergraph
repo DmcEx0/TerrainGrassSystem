@@ -1430,8 +1430,8 @@
     "m_ObjectId": "2a58e8c5a1c945eea3d30a21bc99ccdd",
     "m_Title": "ColorBlending",
     "m_Position": {
-        "x": 110.40013885498047,
-        "y": 632.7998657226563
+        "x": 111.0,
+        "y": 634.9999389648438
     }
 }
 
@@ -1574,8 +1574,8 @@
     "m_ObjectId": "3497df086f954f77a1718950dffa0968",
     "m_Title": "VertexShader",
     "m_Position": {
-        "x": -924.0,
-        "y": -315.20001220703127
+        "x": -922.9998779296875,
+        "y": -313.0
     }
 }
 
@@ -1936,6 +1936,9 @@
         },
         {
             "m_Id": "0c3dd0bcfbe6479f93ce71567c680ddf"
+        },
+        {
+            "m_Id": "a862c77837c541b28b5a9da6ceaa131f"
         }
     ],
     "synonyms": [
@@ -2434,8 +2437,8 @@
     "m_ObjectId": "52e2df8a6c824e3fbcb070da42b2fef9",
     "m_Title": "AO",
     "m_Position": {
-        "x": -699.2000122070313,
-        "y": 882.3998413085938
+        "x": -698.9999389648438,
+        "y": 883.9999389648438
     }
 }
 
@@ -4307,6 +4310,29 @@
 
 {
     "m_SGVersion": 0,
+    "m_Type": "UnityEditor.ShaderGraph.Vector3MaterialSlot",
+    "m_ObjectId": "a862c77837c541b28b5a9da6ceaa131f",
+    "m_Id": 12,
+    "m_DisplayName": "BladeRootWS",
+    "m_SlotType": 1,
+    "m_Hidden": false,
+    "m_ShaderOutputName": "BladeRootWS",
+    "m_StageCapability": 3,
+    "m_Value": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+    },
+    "m_DefaultValue": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+    },
+    "m_Labels": []
+}
+
+{
+    "m_SGVersion": 0,
     "m_Type": "UnityEditor.ShaderGraph.DynamicVectorMaterialSlot",
     "m_ObjectId": "a878e12ee4324c18862e293064ca195b",
     "m_Id": 1,
@@ -5004,8 +5030,8 @@
     "m_ObjectId": "c5f6edd09eef4b08afd990672882e255",
     "m_Title": "Smoothness",
     "m_Position": {
-        "x": -604.7999877929688,
-        "y": 400.79998779296877
+        "x": -603.9998779296875,
+        "y": 403.0000305175781
     }
 }
 
@@ -5086,8 +5112,8 @@
     "m_ObjectId": "cab8c5370f7249a282daea8c77d2ab64",
     "m_Title": "Tips",
     "m_Position": {
-        "x": -698.3999633789063,
-        "y": 640.7999877929688
+        "x": -697.9999389648438,
+        "y": 643.0
     }
 }
 

@@ -54,10 +54,10 @@ float3 _GrassBladeBezierTangent(float t, float h, float tilt, float bend)
 // angle. The blade as a whole keeps its pose; only the surface twists.
 //
 // Outputs (WORLD SPACE):
-//   PositionWS   - blade position WITHOUT wind. Add GrassWind_Apply output to get
-//                  the final position. Drive Vertex Position with the sum (no
-//                  Transform node needed — model matrix is identity for
-//                  Graphics.RenderMeshIndirect).
+//   PositionWS   - blade position WITHOUT wind or interaction. Add GrassWind_Apply
+//                  and GrassInteraction_Apply outputs to get the final position.
+//                  Drive Vertex Position with the sum (no Transform node needed —
+//                  model matrix is identity for Graphics.RenderMeshIndirect).
 //   NormalWS     - drive Vertex Normal directly.
 //   ColorBase    - blade.color * AO * tipBoost (premixed). Use this OR
 //                  GrassBlade_Masks_float for manual blending.
@@ -65,6 +65,8 @@ float3 _GrassBladeBezierTangent(float t, float h, float tilt, float bend)
 //   WindBase     - per-blade wind magnitude from the compute pass. Feed into
 //                  GrassWind_Apply together with V (= PositionOS.y) to get the
 //                  world-space wind offset. To skip wind, ignore this output.
+//   BladeRootWS  - world-space root position of this blade (blade.position).
+//                  Feed into GrassInteraction_Apply to get the interaction offset.
 void GrassBlade_Vertex_float(
     float3 PositionOS,
     float  InstanceID,
@@ -77,7 +79,8 @@ void GrassBlade_Vertex_float(
     out float3 NormalWS,
     out float3 ColorBase,
     out float2 UV,
-    out float  WindBase)
+    out float  WindBase,
+    out float3 BladeRootWS)
 {
     uint id = (uint)InstanceID;
     GrassBlade blade = _GrassBlades[id];
@@ -156,11 +159,12 @@ void GrassBlade_Vertex_float(
     float  aoFactor = lerp(1.0 - AOStrength, 1.0, v);
     float3 color    = blade.color * aoFactor * lerp(1.0, TipBoost, v);
 
-    PositionWS = worldPos;
-    NormalWS   = outNormalWS;
-    ColorBase  = color;
-    UV         = float2(side * 0.5 + 0.5, v);
-    WindBase   = blade.windBase;
+    PositionWS   = worldPos;
+    NormalWS     = outNormalWS;
+    ColorBase    = color;
+    UV           = float2(side * 0.5 + 0.5, v);
+    WindBase     = blade.windBase;
+    BladeRootWS  = blade.position;
 }
 
 // --- Billboard Vertex Custom Function ---------------------------------------
@@ -174,8 +178,8 @@ void GrassBlade_Vertex_float(
 // camera, guaranteeing the face normal points toward it. The blade's own facing
 // is kept for the tilt/lean geometry so each stalk retains its natural pose.
 // Same parameter signature as GrassBlade_Vertex_float (CamFacingT and
-// CamFacingMaxA are accepted but unused). WindBase output works identically —
-// add GrassWind_Apply(WindBase, V) to PositionWS in the graph.
+// CamFacingMaxA are accepted but unused). WindBase and BladeRootWS outputs
+// work identically — see GrassBlade_Vertex_float for wiring details.
 void GrassBlade_VertexBillboard_float(
     float3 PositionOS,
     float  InstanceID,
@@ -188,7 +192,8 @@ void GrassBlade_VertexBillboard_float(
     out float3 NormalWS,
     out float3 ColorBase,
     out float2 UV,
-    out float  WindBase)
+    out float  WindBase,
+    out float3 BladeRootWS)
 {
     uint id = (uint)InstanceID;
     GrassBlade blade = _GrassBlades[id];
@@ -233,11 +238,12 @@ void GrassBlade_VertexBillboard_float(
     float  aoFactor = lerp(1.0 - AOStrength, 1.0, v);
     float3 color    = blade.color * aoFactor * lerp(1.0, TipBoost, v);
 
-    PositionWS = worldPos;
-    NormalWS   = outNormalWS;
-    ColorBase  = color;
-    UV         = float2(side * 0.5 + 0.5, v);
-    WindBase   = blade.windBase;
+    PositionWS   = worldPos;
+    NormalWS     = outNormalWS;
+    ColorBase    = color;
+    UV           = float2(side * 0.5 + 0.5, v);
+    WindBase     = blade.windBase;
+    BladeRootWS  = blade.position;
 }
 
 // --- Masks Custom Function --------------------------------------------------

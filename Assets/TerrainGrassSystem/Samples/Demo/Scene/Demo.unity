@@ -420,7 +420,8 @@ GameObject:
   - component: {fileID: 1170841062}
   - component: {fileID: 1170841061}
   - component: {fileID: 1170841060}
-  - component: {fileID: 1170841059}
+  - component: {fileID: 1170841065}
+  - component: {fileID: 1170841064}
   m_Layer: 0
   m_Name: Capsule
   m_TagString: Untagged
@@ -428,19 +429,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1170841059
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1170841058}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 6210add8157994d4fb2a87bc48b4dedf, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::TestInteraction
-  _collider: {fileID: 1170841060}
 --- !u!136 &1170841060
 CapsuleCollider:
   m_ObjectHideFlags: 0
@@ -529,7 +517,7 @@ RectTransform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1170841058}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 3.791}
+  m_LocalPosition: {x: 0, y: 0, z: 9.73}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -537,9 +525,34 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 4.501, y: 0.87}
+  m_AnchoredPosition: {x: 10.6, y: 0.87}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
+--- !u!114 &1170841064
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1170841058}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 54b91c796ae061943b1aaf770d63419a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: TerrainGrassSystem.Grass::TerrainGrassSystem.GrassInteractionSource
+  Radius: 1
+--- !u!114 &1170841065
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1170841058}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 266871df3575c954b9d532c4abd72dd2, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: TerrainGrassSystem.Grass::TerrainGrassSystem.GrassInteractionManager
 --- !u!1 &1382511376
 GameObject:
   m_ObjectHideFlags: 0

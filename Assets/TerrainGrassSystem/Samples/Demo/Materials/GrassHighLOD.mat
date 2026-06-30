@@ -120,10 +120,10 @@ Material:
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
-    - _InteractionDistance: 1
+    - _InteractionDistance: 10
     - _InteractionDistance_1: 1
     - _InteractionDistance_2: 1.55
-    - _InteractionStr: 1
+    - _InteractionStr: 9999999
     - _Metallic: 0
     - _NM: 1.21
     - _OcclusionStrength: 1
