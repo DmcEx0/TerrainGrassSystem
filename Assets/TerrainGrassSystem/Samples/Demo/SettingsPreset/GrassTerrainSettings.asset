@@ -17,7 +17,7 @@ MonoBehaviour:
   TileCullDistance: 130
   MaxBladeDistance: 150
   FrustumPaddingDegrees: 8
-  HighLodDistance: 4.1
+  HighLodDistance: 122.1
   LodBlendBand: 8
   ThinningStartDistance: 30
   ThinningStrength: 1
