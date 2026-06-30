@@ -120,8 +120,10 @@ Material:
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
-    - _InteractionDistance: 5.21
+    - _InteractionDistance: 1
     - _InteractionDistance_1: 1
+    - _InteractionDistance_2: 1.55
+    - _InteractionStr: 1
     - _Metallic: 0
     - _NM: 1.21
     - _OcclusionStrength: 1
@@ -129,6 +131,7 @@ Material:
     - _QueueControl: 0
     - _QueueOffset: 0
     - _ReceiveShadows: 1
+    - _STR: 11111111
     - _Smooth_Intensity: 0
     - _Smooth_Strength: 0.5
     - _Smoothness: 0.5
@@ -139,6 +142,7 @@ Material:
     - _SrcBlend: 1
     - _SrcBlendAlpha: 1
     - _Str: 53.78
+    - _Str1: 0
     - _Str_1: 1
     - _Surface: 0
     - _SwapTextureToColor: 0
