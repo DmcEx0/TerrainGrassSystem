@@ -12,11 +12,14 @@ namespace TerrainGrassSystem
     [AddComponentMenu("TerrainGrassSystem/Grass/Grass Interaction Manager")]
     public class GrassInteractionManager : MonoBehaviour
     {
+        [SerializeField] private float _interactionStr;
         const int MaxSources = 8;
 
         static readonly List<GrassInteractionSource> s_Sources = new();
         static readonly int PropSources = Shader.PropertyToID("_GrassInteractionSources");
         static readonly int PropCount   = Shader.PropertyToID("_GrassInteractionCount");
+        
+        static readonly int PropInteractionStr  = Shader.PropertyToID("_InteractionStr");
 
         readonly Vector4[] _buffer = new Vector4[MaxSources];
 
@@ -39,7 +42,9 @@ namespace TerrainGrassSystem
                 Vector3 p = src.transform.position;
                 _buffer[count++] = new Vector4(p.x, p.y, p.z, src.Radius);
             }
+            
             Shader.SetGlobalVectorArray(PropSources, _buffer);
+            Shader.SetGlobalFloat(PropInteractionStr, _interactionStr);
             Shader.SetGlobalInt(PropCount, count);
         }
 
