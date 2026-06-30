@@ -54,12 +54,17 @@ float3 _GrassBladeBezierTangent(float t, float h, float tilt, float bend)
 // angle. The blade as a whole keeps its pose; only the surface twists.
 //
 // Outputs (WORLD SPACE):
-//   PositionWS   - drive Vertex Position directly (model matrix is identity for
-//                  Graphics.RenderMeshIndirect; no Transform node needed).
+//   PositionWS   - blade position WITHOUT wind. Add GrassWind_Apply output to get
+//                  the final position. Drive Vertex Position with the sum (no
+//                  Transform node needed — model matrix is identity for
+//                  Graphics.RenderMeshIndirect).
 //   NormalWS     - drive Vertex Normal directly.
 //   ColorBase    - blade.color * AO * tipBoost (premixed). Use this OR
 //                  GrassBlade_Masks_float for manual blending.
 //   UV           - (side*0.5+0.5, v).
+//   WindBase     - per-blade wind magnitude from the compute pass. Feed into
+//                  GrassWind_Apply together with V (= PositionOS.y) to get the
+//                  world-space wind offset. To skip wind, ignore this output.
 void GrassBlade_Vertex_float(
     float3 PositionOS,
     float  InstanceID,
@@ -71,7 +76,8 @@ void GrassBlade_Vertex_float(
     out float3 PositionWS,
     out float3 NormalWS,
     out float3 ColorBase,
-    out float2 UV)
+    out float2 UV,
+    out float  WindBase)
 {
     uint id = (uint)InstanceID;
     GrassBlade blade = _GrassBlades[id];
@@ -124,8 +130,7 @@ void GrassBlade_Vertex_float(
     float3 curve      = _GrassBladeBezier(v, h, blade.tiltAngle, blade.bend);
     float  sideOffset = (side * 0.5) * wAtV;
     float3 localPos   = rFacing * curve.z + up * curve.y + rRight * sideOffset;
-    float3 worldPos   = blade.position + localPos
-                      + ApplyGrassWind(blade.windBase, v);
+    float3 worldPos   = blade.position + localPos;
 
     // Curved fake normal -------------------------------------------------
     float3 tangentWS    = normalize(up * tLocal.y + rFacing * tLocal.z);
@@ -155,6 +160,7 @@ void GrassBlade_Vertex_float(
     NormalWS   = outNormalWS;
     ColorBase  = color;
     UV         = float2(side * 0.5 + 0.5, v);
+    WindBase   = blade.windBase;
 }
 
 // --- Billboard Vertex Custom Function ---------------------------------------
@@ -168,7 +174,8 @@ void GrassBlade_Vertex_float(
 // camera, guaranteeing the face normal points toward it. The blade's own facing
 // is kept for the tilt/lean geometry so each stalk retains its natural pose.
 // Same parameter signature as GrassBlade_Vertex_float (CamFacingT and
-// CamFacingMaxA are accepted but unused).
+// CamFacingMaxA are accepted but unused). WindBase output works identically —
+// add GrassWind_Apply(WindBase, V) to PositionWS in the graph.
 void GrassBlade_VertexBillboard_float(
     float3 PositionOS,
     float  InstanceID,
@@ -180,7 +187,8 @@ void GrassBlade_VertexBillboard_float(
     out float3 PositionWS,
     out float3 NormalWS,
     out float3 ColorBase,
-    out float2 UV)
+    out float2 UV,
+    out float  WindBase)
 {
     uint id = (uint)InstanceID;
     GrassBlade blade = _GrassBlades[id];
@@ -207,7 +215,7 @@ void GrassBlade_VertexBillboard_float(
     float  wAtV     = blade.width * (1.0 - v * 0.75);
     float3 curve    = _GrassBladeBezier(v, h, blade.tiltAngle, blade.bend);
     float3 localPos = facing * curve.z + up * curve.y + right * (side * 0.5 * wAtV);
-    float3 worldPos = blade.position + localPos + ApplyGrassWind(blade.windBase, v);
+    float3 worldPos = blade.position + localPos;
 
     float3 tLocal      = _GrassBladeBezierTangent(v, h, blade.tiltAngle, blade.bend);
     float3 tangentWS   = normalize(up * tLocal.y + facing * tLocal.z);
@@ -229,6 +237,7 @@ void GrassBlade_VertexBillboard_float(
     NormalWS   = outNormalWS;
     ColorBase  = color;
     UV         = float2(side * 0.5 + 0.5, v);
+    WindBase   = blade.windBase;
 }
 
 // --- Masks Custom Function --------------------------------------------------

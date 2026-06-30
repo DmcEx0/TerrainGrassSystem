@@ -394,7 +394,17 @@ The default settings target ~100,000 visible blades across a 30-meter panorama.
 
 ## 🧪 ShaderGraph variant
 
-`GrassBladeGraph.hlsl` contains the Custom Function `GrassBlade_Vertex_float`. To replace the manual HLSL shader with ShaderGraph:
+The blade graph is intentionally split into two Custom Function nodes so that geometry and wind can be wired, swapped, or disabled independently:
+
+| Node | File | Function name | Role |
+|---|---|---|---|
+| **GrassBlade_Vertex** | `GrassBladeGraph.hlsl` | `GrassBlade_Vertex` | Blade geometry — position (no wind), normal, color |
+| **GrassWind_Apply** | `GrassWind.hlsl` | `GrassWind_Apply` | Wind offset — adds horizontal sway |
+| *(opt.)* **GrassBlade_Masks** | `GrassBladeGraph.hlsl` | `GrassBlade_Masks` | Separate AO + tip mask |
+
+For the LowLOD graph use `GrassBlade_VertexBillboard` instead of `GrassBlade_Vertex`; its outputs and wiring are identical.
+
+### Step-by-step
 
 1. **Create → Shader Graph → URP → Lit Shader Graph**, name it `GrassBlade`.
 2. **Graph Inspector → Graph Settings:** Material = Lit, Surface Type = Opaque, Render Face = Both.
@@ -409,25 +419,44 @@ The default settings target ~100,000 visible blades across a 30-meter panorama.
    | `_TipBoost` | `1.2` |
    | `_Smoothness` | `0.05` |
 
-4. **Custom Function node:** Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
+4. **Node 1 — GrassBlade_Vertex (geometry):**
+   Custom Function → Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
    - **Inputs:** `PositionOS` (Vector3), `InstanceID` (Float), `CamFacingT` (Float), `CamFacingMaxA` (Float), `CurvedNAmt` (Float), `AOStrength` (Float), `TipBoost` (Float)
-   - **Outputs:** `PositionWS` (Vector3), `NormalWS` (Vector3), `ColorBase` (Vector3), `UV` (Vector2)
-5. **Connections:**
-   - Position (Object Space) → `PositionOS`
-   - Instance ID → `InstanceID`
-   - Property nodes → the matching inputs
-   - `PositionWS` → the Vertex Position block (directly, no Transform node)
-   - `NormalWS` → the Vertex Normal block (directly)
-   - `ColorBase` → the Base Color block
-   - `_Smoothness` → the Smoothness block
+   - **Outputs:** `PositionWS` (Vector3), `NormalWS` (Vector3), `ColorBase` (Vector3), `UV` (Vector2), `WindBase` (Float)
 
-   > `Graphics.RenderMeshIndirect` uses an identity model matrix, so Object Space ≡ World Space — a Transform (World → Object) would be a no-op.
+5. **Node 2 — GrassWind_Apply (wind):**
+   Custom Function → Mode = File, Source = `GrassWind.hlsl`, Name = `GrassWind_Apply`.
+   - **Inputs:** `WindBase` (Float), `V` (Float)
+   - **Outputs:** `WindOffset` (Vector3)
 
-6. **(opt.) Custom Function `GrassBlade_Masks`** — separate AO and tip-mask outputs (instead of the pre-mixed `ColorBase`). Useful for mixing color yourself in the graph.
-   - **Inputs:** `V` (Float, from a Split on Position(OS).G), `AOStrength` (Float)
+6. **Connections:**
+
+   ```
+   Position (Object Space) ──────────────────────────────────────► PositionOS
+   Split(Position OS).G    ──────────────────────────────────────► V  (wind node)
+   Instance ID             ──────────────────────────────────────► InstanceID
+   Properties              ──────────────────────────────────────► matching inputs
+
+   GrassBlade_Vertex.WindBase ────────────────────────────────────► WindBase (wind node)
+
+   GrassBlade_Vertex.PositionWS ──┐
+                                  ├─ Add ──────────────────────────► Vertex Position
+   GrassWind_Apply.WindOffset   ──┘
+
+   GrassBlade_Vertex.NormalWS  ───────────────────────────────────► Vertex Normal
+   GrassBlade_Vertex.ColorBase ───────────────────────────────────► Base Color
+   _Smoothness                 ───────────────────────────────────► Smoothness
+   ```
+
+   > `Graphics.RenderMeshIndirect` uses an identity model matrix, so Object Space ≡ World Space — no Transform node is needed.
+
+   > **To disable wind:** skip the GrassWind_Apply node and wire `PositionWS` directly to Vertex Position.
+
+7. **(opt.) Node 3 — GrassBlade_Masks** — separate AO and tip-mask outputs instead of the pre-mixed `ColorBase`.
+   - **Inputs:** `V` (Float, from Split on Position(OS).G), `AOStrength` (Float)
    - **Outputs:** `AO` (Float), `TipMask` (Float)
 
-   A typical color wiring:
+   Typical color wiring with this node:
 
    ```
    GrassType_Color ─┐
@@ -438,9 +467,9 @@ The default settings target ~100,000 visible blades across a 30-meter panorama.
                                      GrassTint ┘  (Color property)
    ```
 
-   With this scheme do **not** connect `ColorBase` from the first node into Base Color, otherwise AO/TipBoost get multiplied twice.
+   When using this scheme, do **not** also connect `ColorBase` from Node 1 — AO/TipBoost would be applied twice.
 
-7. Create a Material from the graph, assign it in `GrassTerrain`. After verifying, `GrassBlade.shader` can be deleted.
+8. Create a Material from the graph, assign it in `GrassTerrain`. After verifying, `GrassBlade.shader` can be deleted.
 
 ShaderGraph automatically generates the ShadowCaster and DepthOnly passes.
 

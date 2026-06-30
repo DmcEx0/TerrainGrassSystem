@@ -394,7 +394,17 @@ RGBA-текстура размером с террейн (или меньше �
 
 ## 🧪 Вариант с ShaderGraph
 
-`GrassBladeGraph.hlsl` содержит Custom Function `GrassBlade_Vertex_float`. Чтобы заменить ручной HLSL-шейдер на ShaderGraph:
+Логика травы намеренно разбита на две Custom Function ноды, чтобы геометрию и ветер можно было подключать, менять и отключать независимо:
+
+| Нода | Файл | Имя функции | Роль |
+|---|---|---|---|
+| **GrassBlade_Vertex** | `GrassBladeGraph.hlsl` | `GrassBlade_Vertex` | Геометрия травинки — позиция (без ветра), нормаль, цвет |
+| **GrassWind_Apply** | `GrassWind.hlsl` | `GrassWind_Apply` | Смещение от ветра — горизонтальное покачивание |
+| *(опц.)* **GrassBlade_Masks** | `GrassBladeGraph.hlsl` | `GrassBlade_Masks` | Отдельно AO + маска кончика |
+
+Для графа LowLOD вместо `GrassBlade_Vertex` используйте `GrassBlade_VertexBillboard` — выходы и подключения идентичны.
+
+### Пошаговая инструкция
 
 1. **Create → Shader Graph → URP → Lit Shader Graph**, имя `GrassBlade`.
 2. **Graph Inspector → Graph Settings:** Material = Lit, Surface Type = Opaque, Render Face = Both.
@@ -409,25 +419,44 @@ RGBA-текстура размером с террейн (или меньше �
    | `_TipBoost` | `1.2` |
    | `_Smoothness` | `0.05` |
 
-4. **Custom Function нода:** Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
+4. **Нода 1 — GrassBlade_Vertex (геометрия):**
+   Custom Function → Mode = File, Source = `GrassBladeGraph.hlsl`, Name = `GrassBlade_Vertex`.
    - **Inputs:** `PositionOS` (Vector3), `InstanceID` (Float), `CamFacingT` (Float), `CamFacingMaxA` (Float), `CurvedNAmt` (Float), `AOStrength` (Float), `TipBoost` (Float)
-   - **Outputs:** `PositionWS` (Vector3), `NormalWS` (Vector3), `ColorBase` (Vector3), `UV` (Vector2)
-5. **Подключения:**
-   - Position (Object Space) → `PositionOS`
-   - Instance ID → `InstanceID`
-   - Property-ноды → соответствующие входы
-   - `PositionWS` → блок Vertex Position (напрямую, без Transform-ноды)
-   - `NormalWS` → блок Vertex Normal (напрямую)
-   - `ColorBase` → блок Base Color
-   - `_Smoothness` → блок Smoothness
+   - **Outputs:** `PositionWS` (Vector3), `NormalWS` (Vector3), `ColorBase` (Vector3), `UV` (Vector2), `WindBase` (Float)
 
-   > `Graphics.RenderMeshIndirect` использует единичную model-матрицу, поэтому Object Space ≡ World Space — Transform (World → Object) был бы no-op.
+5. **Нода 2 — GrassWind_Apply (ветер):**
+   Custom Function → Mode = File, Source = `GrassWind.hlsl`, Name = `GrassWind_Apply`.
+   - **Inputs:** `WindBase` (Float), `V` (Float)
+   - **Outputs:** `WindOffset` (Vector3)
 
-6. **(опц.) Custom Function `GrassBlade_Masks`** — отдельные выходы AO и маски кончиков (вместо пред-смешанного `ColorBase`). Полезно для самостоятельного микса цвета в графе.
+6. **Подключения:**
+
+   ```
+   Position (Object Space) ──────────────────────────────────────► PositionOS
+   Split(Position OS).G    ──────────────────────────────────────► V  (нода ветра)
+   Instance ID             ──────────────────────────────────────► InstanceID
+   Property-ноды           ──────────────────────────────────────► соответствующие входы
+
+   GrassBlade_Vertex.WindBase ────────────────────────────────────► WindBase (нода ветра)
+
+   GrassBlade_Vertex.PositionWS ──┐
+                                  ├─ Add ──────────────────────────► Vertex Position
+   GrassWind_Apply.WindOffset   ──┘
+
+   GrassBlade_Vertex.NormalWS  ───────────────────────────────────► Vertex Normal
+   GrassBlade_Vertex.ColorBase ───────────────────────────────────► Base Color
+   _Smoothness                 ───────────────────────────────────► Smoothness
+   ```
+
+   > `Graphics.RenderMeshIndirect` использует единичную model-матрицу, поэтому Object Space ≡ World Space — Transform-нода не нужна.
+
+   > **Отключить ветер:** не добавляйте ноду GrassWind_Apply, а `PositionWS` подключайте напрямую в Vertex Position.
+
+7. **(опц.) Нода 3 — GrassBlade_Masks** — отдельные выходы AO и маски кончиков вместо пред-смешанного `ColorBase`.
    - **Inputs:** `V` (Float, из Split по Position(OS).G), `AOStrength` (Float)
    - **Outputs:** `AO` (Float), `TipMask` (Float)
 
-   Типичная разводка цвета:
+   Типичная разводка цвета с этой нодой:
 
    ```
    GrassType_Color ─┐
@@ -438,9 +467,9 @@ RGBA-текстура размером с террейн (или меньше �
                                      GrassTint ┘  (Color property)
    ```
 
-   При этой схеме **не** подключать `ColorBase` из первой ноды в Base Color, иначе AO/TipBoost умножатся дважды.
+   При этой схеме **не** подключайте `ColorBase` из Ноды 1 в Base Color — иначе AO/TipBoost умножатся дважды.
 
-7. Создать Material из графа, назначить в `GrassTerrain`. После проверки `GrassBlade.shader` можно удалить.
+8. Создать Material из графа, назначить в `GrassTerrain`. После проверки `GrassBlade.shader` можно удалить.
 
 ShaderGraph автоматически генерирует ShadowCaster и DepthOnly проходы.
 
