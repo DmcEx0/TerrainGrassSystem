@@ -1071,6 +1071,22 @@
 
 {
     "m_SGVersion": 0,
+    "m_Type": "UnityEditor.ShaderGraph.Vector1MaterialSlot",
+    "m_ObjectId": "0c3dd0bcfbe6479f93ce71567c680ddf",
+    "m_Id": 11,
+    "m_DisplayName": "WindBase",
+    "m_SlotType": 1,
+    "m_Hidden": false,
+    "m_ShaderOutputName": "WindBase",
+    "m_StageCapability": 3,
+    "m_Value": 0.0,
+    "m_DefaultValue": 0.0,
+    "m_Labels": [],
+    "m_LiteralMode": false
+}
+
+{
+    "m_SGVersion": 0,
     "m_Type": "UnityEditor.ShaderGraph.DynamicValueMaterialSlot",
     "m_ObjectId": "0c8cd893332f477992a699cfe2ffa239",
     "m_Id": 1,
@@ -1414,8 +1430,8 @@
     "m_ObjectId": "2a58e8c5a1c945eea3d30a21bc99ccdd",
     "m_Title": "ColorBlending",
     "m_Position": {
-        "x": 110.4000244140625,
-        "y": 632.7999877929688
+        "x": 111.00010681152344,
+        "y": 635.0000610351563
     }
 }
 
@@ -1558,8 +1574,8 @@
     "m_ObjectId": "3497df086f954f77a1718950dffa0968",
     "m_Title": "VertexShader",
     "m_Position": {
-        "x": -923.9999389648438,
-        "y": -315.20001220703127
+        "x": -922.9998779296875,
+        "y": -312.9999694824219
     }
 }
 
@@ -1917,6 +1933,9 @@
         },
         {
             "m_Id": "0e4d9eda0dc34567a34da52049b9483f"
+        },
+        {
+            "m_Id": "0c3dd0bcfbe6479f93ce71567c680ddf"
         }
     ],
     "synonyms": [
@@ -2415,8 +2434,8 @@
     "m_ObjectId": "52e2df8a6c824e3fbcb070da42b2fef9",
     "m_Title": "AO",
     "m_Position": {
-        "x": -699.199951171875,
-        "y": 882.4000854492188
+        "x": -698.9998779296875,
+        "y": 884.0
     }
 }
 
@@ -4985,8 +5004,8 @@
     "m_ObjectId": "c5f6edd09eef4b08afd990672882e255",
     "m_Title": "Smoothness",
     "m_Position": {
-        "x": -604.7999877929688,
-        "y": 400.79998779296877
+        "x": -603.9999389648438,
+        "y": 403.0000305175781
     }
 }
 
@@ -5067,8 +5086,8 @@
     "m_ObjectId": "cab8c5370f7249a282daea8c77d2ab64",
     "m_Title": "Tips",
     "m_Position": {
-        "x": -698.3999633789063,
-        "y": 640.7999877929688
+        "x": -697.9999389648438,
+        "y": 643.0000610351563
     }
 }
 
