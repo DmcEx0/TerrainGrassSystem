@@ -43,6 +43,7 @@ namespace TerrainGrassSystem
         GrassWind      _wind;
         readonly List<GrassRenderer.Tile> _visibleTiles = new(256);
         readonly Plane[] _frustumPlaneBuffer = new Plane[6];
+        bool _hasRenderPassResult;
 
         static readonly List<GrassTerrain> s_ActiveTerrains = new(8);
         static int s_LastRenderPassFrame = -1000;
@@ -78,8 +79,7 @@ namespace TerrainGrassSystem
         }
 
         internal bool ShouldRenderFromRenderPass =>
-            Application.isPlaying
-            && Settings != null
+            Settings != null
             && Settings.RenderPath == GrassRenderPath.UniversalRenderPass;
 
         internal static void MarkRenderPassQueued()
@@ -120,6 +120,7 @@ namespace TerrainGrassSystem
             s_ActiveTerrains.Remove(this);
             _renderer?.Dispose();
             _renderer = null;
+            _hasRenderPassResult = false;
         }
 
         void OnValidate()
@@ -160,6 +161,7 @@ namespace TerrainGrassSystem
 
             _renderer.Dispose();
             _renderer = null;
+            _hasRenderPassResult = false;
         }
 #endif
 
@@ -217,7 +219,7 @@ namespace TerrainGrassSystem
             });
         }
 
-        internal void RenderFromRenderPass(
+        internal void GenerateAndRenderFromRenderPass(
             UnsafeCommandBuffer cmd,
             Camera camera,
             TextureHandle occlusionDepthTexture,
@@ -265,6 +267,20 @@ namespace TerrainGrassSystem
                 DepthOcclusionTexelSize = depthTexelSize,
                 ZBufferParams = CalculateZBufferParams(camera),
             }, occlusionDepthTexture);
+
+            _hasRenderPassResult = true;
+        }
+
+        internal void DrawLastRenderPassResult(UnsafeCommandBuffer cmd)
+        {
+            if (!ShouldRenderFromRenderPass) return;
+            if (!ValidateConfig()) return;
+            if (!_hasRenderPassResult) return;
+
+            EnsureRenderer();
+            if (_renderer == null) return;
+
+            _renderer.DrawExisting(cmd);
         }
 
         static Vector4 CalculateZBufferParams(Camera cam)
@@ -302,6 +318,7 @@ namespace TerrainGrassSystem
                 RenderBounds = WorldBounds(),
                 ShadowMode   = UnityEngine.Rendering.ShadowCastingMode.On,
             };
+            _hasRenderPassResult = false;
             _renderer.UploadGrassType(Type);
         }
 

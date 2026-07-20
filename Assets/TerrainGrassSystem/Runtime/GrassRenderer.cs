@@ -271,6 +271,12 @@ namespace TerrainGrassSystem
             SubmitDraw(cmd, _lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
+        internal void DrawExisting(UnsafeCommandBuffer cmd)
+        {
+            SubmitDraw(cmd, _highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
+            SubmitDraw(cmd, _lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
+        }
+
         internal static Matrix4x4 CalculateCullingMatrix(Camera cam, float frustumPaddingDegrees)
         {
             var projection = cam.projectionMatrix;

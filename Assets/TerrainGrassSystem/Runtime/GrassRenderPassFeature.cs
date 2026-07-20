@@ -8,6 +8,8 @@ namespace TerrainGrassSystem
     public sealed class GrassRenderPassFeature : ScriptableRendererFeature
     {
         [SerializeField] RenderPassEvent _renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
+        [Tooltip("Draw the latest Game camera grass buffers in Scene View instead of regenerating grass for the Scene camera.")]
+        [SerializeField] bool _showGameCameraResultInSceneView = true;
 
         GrassRenderPass _pass;
 
@@ -16,6 +18,7 @@ namespace TerrainGrassSystem
             _pass = new GrassRenderPass
             {
                 renderPassEvent = _renderPassEvent,
+                ShowGameCameraResultInSceneView = _showGameCameraResultInSceneView,
             };
         }
 
@@ -27,6 +30,7 @@ namespace TerrainGrassSystem
 
             _pass ??= new GrassRenderPass();
             _pass.renderPassEvent = _renderPassEvent;
+            _pass.ShowGameCameraResultInSceneView = _showGameCameraResultInSceneView;
             _pass.ConfigureInput(IsGameCamera(camera) && GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain
                 ? ScriptableRenderPassInput.Depth
                 : ScriptableRenderPassInput.None);
@@ -44,6 +48,11 @@ namespace TerrainGrassSystem
             return camera != null && camera.cameraType == CameraType.Game;
         }
 
+        static bool IsSceneCamera(Camera camera)
+        {
+            return camera != null && camera.cameraType == CameraType.SceneView;
+        }
+
         static bool IsSupportedCamera(Camera camera)
         {
             return camera != null
@@ -52,6 +61,8 @@ namespace TerrainGrassSystem
 
         sealed class GrassRenderPass : ScriptableRenderPass
         {
+            internal bool ShowGameCameraResultInSceneView;
+
             sealed class PassData
             {
                 public TextureHandle ColorTexture;
@@ -61,6 +72,7 @@ namespace TerrainGrassSystem
                 public Matrix4x4 ViewMatrix;
                 public Matrix4x4 ProjectionMatrix;
                 public Vector4 DepthTexelSize;
+                public bool DrawOnly;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -73,7 +85,9 @@ namespace TerrainGrassSystem
                 var depthTexture = resourceData.activeDepthTexture;
                 if (!colorTexture.IsValid() || !depthTexture.IsValid()) return;
 
-                bool enableDepthOcclusion = IsGameCamera(cameraData.camera)
+                bool drawOnly = IsSceneCamera(cameraData.camera) && ShowGameCameraResultInSceneView;
+                bool enableDepthOcclusion = !drawOnly
+                    && IsGameCamera(cameraData.camera)
                     && GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain;
                 var occlusionDepthTexture = enableDepthOcclusion
                     ? resourceData.cameraDepthTexture
@@ -86,6 +100,7 @@ namespace TerrainGrassSystem
                 passData.Camera = cameraData.camera;
                 passData.ViewMatrix = cameraData.GetViewMatrix();
                 passData.ProjectionMatrix = cameraData.GetProjectionMatrix();
+                passData.DrawOnly = drawOnly;
 
                 var depthInfo = renderGraph.GetRenderTargetInfo(
                     occlusionDepthTexture.IsValid() ? occlusionDepthTexture : depthTexture);
@@ -108,13 +123,20 @@ namespace TerrainGrassSystem
                     var terrains = GrassTerrain.ActiveTerrains;
                     for (int i = 0; i < terrains.Count; ++i)
                     {
-                        terrains[i]?.RenderFromRenderPass(
-                            context.cmd,
-                            data.Camera,
-                            data.OcclusionDepthTexture,
-                            data.ViewMatrix,
-                            data.ProjectionMatrix,
-                            data.DepthTexelSize);
+                        if (data.DrawOnly)
+                        {
+                            terrains[i]?.DrawLastRenderPassResult(context.cmd);
+                        }
+                        else
+                        {
+                            terrains[i]?.GenerateAndRenderFromRenderPass(
+                                context.cmd,
+                                data.Camera,
+                                data.OcclusionDepthTexture,
+                                data.ViewMatrix,
+                                data.ProjectionMatrix,
+                                data.DepthTexelSize);
+                        }
                     }
                 });
             }
