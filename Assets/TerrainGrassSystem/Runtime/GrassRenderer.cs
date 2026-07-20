@@ -50,6 +50,14 @@ namespace TerrainGrassSystem
         static readonly int s_ZBufferParamsId      = Shader.PropertyToID("_GrassZBufferParams");
         static readonly int s_RenderingLayerId     = Shader.PropertyToID("unity_RenderingLayer");
         static readonly int s_LightDataId          = Shader.PropertyToID("unity_LightData");
+        static readonly int s_ProbesOcclusionId    = Shader.PropertyToID("unity_ProbesOcclusion");
+        static readonly int s_ShArId               = Shader.PropertyToID("unity_SHAr");
+        static readonly int s_ShAgId               = Shader.PropertyToID("unity_SHAg");
+        static readonly int s_ShAbId               = Shader.PropertyToID("unity_SHAb");
+        static readonly int s_ShBrId               = Shader.PropertyToID("unity_SHBr");
+        static readonly int s_ShBgId               = Shader.PropertyToID("unity_SHBg");
+        static readonly int s_ShBbId               = Shader.PropertyToID("unity_SHBb");
+        static readonly int s_ShCId                = Shader.PropertyToID("unity_SHC");
         const uint k_DefaultRenderingLayerMask = 0x00000001u;
         static readonly float s_DefaultRenderingLayerMaskFloat = Unity.Mathematics.math.asfloat(k_DefaultRenderingLayerMask);
 
@@ -475,10 +483,20 @@ namespace TerrainGrassSystem
 
         static void BindDrawProperties(MaterialPropertyBlock mpb, GraphicsBuffer blades, int lodSegments)
         {
+            var sh = new SHCoefficients(RenderSettings.ambientProbe);
+
             mpb.SetBuffer(s_GrassBladesId, blades);
             mpb.SetInt(s_GrassLodSegmentsId, lodSegments);
             mpb.SetVector(s_RenderingLayerId, new Vector4(s_DefaultRenderingLayerMaskFloat, 0f, 0f, 0f));
             mpb.SetVector(s_LightDataId, new Vector4(1f, 1f, 1f, 0f));
+            mpb.SetVector(s_ProbesOcclusionId, sh.ProbesOcclusion);
+            mpb.SetVector(s_ShArId, sh.SHAr);
+            mpb.SetVector(s_ShAgId, sh.SHAg);
+            mpb.SetVector(s_ShAbId, sh.SHAb);
+            mpb.SetVector(s_ShBrId, sh.SHBr);
+            mpb.SetVector(s_ShBgId, sh.SHBg);
+            mpb.SetVector(s_ShBbId, sh.SHBb);
+            mpb.SetVector(s_ShCId, sh.SHC);
         }
 
         static int FindForwardPass(Material material)
