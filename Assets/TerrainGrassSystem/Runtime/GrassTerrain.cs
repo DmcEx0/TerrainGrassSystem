@@ -79,7 +79,8 @@ namespace TerrainGrassSystem
         }
 
         internal bool ShouldRenderFromRenderPass =>
-            Settings != null
+            Application.isPlaying
+            && Settings != null
             && Settings.RenderPath == GrassRenderPath.UniversalRenderPass;
 
         internal static void MarkRenderPassQueued()
