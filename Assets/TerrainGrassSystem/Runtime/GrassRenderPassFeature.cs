@@ -61,18 +61,23 @@ namespace TerrainGrassSystem
 
         sealed class GrassRenderPass : ScriptableRenderPass
         {
+            static readonly int s_DrawObjectPassDataId   = Shader.PropertyToID("_DrawObjectPassData");
+            static readonly int s_AlphaToMaskAvailableId = Shader.PropertyToID("_AlphaToMaskAvailable");
+
             internal bool ShowGameCameraResultInSceneView;
 
-            sealed class PassData
+            sealed class GeneratePassData
             {
-                public TextureHandle ColorTexture;
-                public TextureHandle DepthTexture;
                 public TextureHandle OcclusionDepthTexture;
                 public Camera Camera;
                 public Matrix4x4 ViewMatrix;
                 public Matrix4x4 ProjectionMatrix;
                 public Vector4 DepthTexelSize;
-                public bool DrawOnly;
+            }
+
+            sealed class DrawPassData
+            {
+                public int MsaaSamples;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -85,51 +90,41 @@ namespace TerrainGrassSystem
                 var depthTexture = resourceData.activeDepthTexture;
                 if (!colorTexture.IsValid() || !depthTexture.IsValid()) return;
 
-                bool drawOnly = IsSceneCamera(cameraData.camera) && ShowGameCameraResultInSceneView;
-                bool enableDepthOcclusion = !drawOnly
+                bool sceneViewDrawsGameResult = IsSceneCamera(cameraData.camera) && ShowGameCameraResultInSceneView;
+                bool enableDepthOcclusion = !sceneViewDrawsGameResult
                     && IsGameCamera(cameraData.camera)
                     && GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain;
                 var occlusionDepthTexture = enableDepthOcclusion
                     ? resourceData.cameraDepthTexture
                     : TextureHandle.nullHandle;
-                using var builder = renderGraph.AddUnsafePass<PassData>("Terrain Grass Render Pass", out var passData);
 
-                passData.ColorTexture = colorTexture;
-                passData.DepthTexture = depthTexture;
-                passData.OcclusionDepthTexture = occlusionDepthTexture;
-                passData.Camera = cameraData.camera;
-                passData.ViewMatrix = cameraData.GetViewMatrix();
-                passData.ProjectionMatrix = cameraData.GetProjectionMatrix();
-                passData.DrawOnly = drawOnly;
-
-                var depthInfo = renderGraph.GetRenderTargetInfo(
-                    occlusionDepthTexture.IsValid() ? occlusionDepthTexture : depthTexture);
-                int width = Mathf.Max(1, depthInfo.width);
-                int height = Mathf.Max(1, depthInfo.height);
-                passData.DepthTexelSize = new Vector4(1f / width, 1f / height, width, height);
-
-                builder.UseTexture(colorTexture, AccessFlags.ReadWrite);
-                builder.UseTexture(depthTexture, AccessFlags.ReadWrite);
-                if (occlusionDepthTexture.IsValid())
-                    builder.UseTexture(occlusionDepthTexture, AccessFlags.Read);
-                builder.AllowPassCulling(false);
-                builder.AllowGlobalStateModification(true);
-                builder.SetRenderFunc((PassData data, UnsafeGraphContext context) =>
+                if (!sceneViewDrawsGameResult)
                 {
-                    context.cmd.SetRenderTarget(
-                        data.ColorTexture, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
-                        data.DepthTexture, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
+                    using var generateBuilder = renderGraph.AddUnsafePass<GeneratePassData>(
+                        "Terrain Grass Generate Pass", out var generateData);
 
-                    var terrains = GrassTerrain.ActiveTerrains;
-                    for (int i = 0; i < terrains.Count; ++i)
+                    generateData.OcclusionDepthTexture = occlusionDepthTexture;
+                    generateData.Camera = cameraData.camera;
+                    generateData.ViewMatrix = cameraData.GetViewMatrix();
+                    generateData.ProjectionMatrix = cameraData.GetProjectionMatrix();
+
+                    var depthInfo = renderGraph.GetRenderTargetInfo(
+                        occlusionDepthTexture.IsValid() ? occlusionDepthTexture : depthTexture);
+                    int width = Mathf.Max(1, depthInfo.width);
+                    int height = Mathf.Max(1, depthInfo.height);
+                    generateData.DepthTexelSize = new Vector4(1f / width, 1f / height, width, height);
+
+                    generateBuilder.UseTexture(depthTexture, AccessFlags.Read);
+                    if (occlusionDepthTexture.IsValid())
+                        generateBuilder.UseTexture(occlusionDepthTexture, AccessFlags.Read);
+                    generateBuilder.AllowPassCulling(false);
+                    generateBuilder.AllowGlobalStateModification(true);
+                    generateBuilder.SetRenderFunc((GeneratePassData data, UnsafeGraphContext context) =>
                     {
-                        if (data.DrawOnly)
+                        var terrains = GrassTerrain.ActiveTerrains;
+                        for (int i = 0; i < terrains.Count; ++i)
                         {
-                            terrains[i]?.DrawLastRenderPassResult(context.cmd);
-                        }
-                        else
-                        {
-                            terrains[i]?.GenerateAndRenderFromRenderPass(
+                            terrains[i]?.GenerateFromRenderPass(
                                 context.cmd,
                                 data.Camera,
                                 data.OcclusionDepthTexture,
@@ -137,8 +132,33 @@ namespace TerrainGrassSystem
                                 data.ProjectionMatrix,
                                 data.DepthTexelSize);
                         }
-                    }
+                    });
+                }
+
+                using var drawBuilder = renderGraph.AddRasterRenderPass<DrawPassData>(
+                    "Terrain Grass Draw Pass", out var drawData);
+
+                drawData.MsaaSamples = cameraData.cameraTargetDescriptor.msaaSamples;
+
+                drawBuilder.SetRenderAttachment(colorTexture, 0, AccessFlags.Write);
+                drawBuilder.SetRenderAttachmentDepth(depthTexture, AccessFlags.ReadWrite);
+                drawBuilder.UseAllGlobalTextures(true);
+                drawBuilder.AllowPassCulling(false);
+                drawBuilder.AllowGlobalStateModification(true);
+                drawBuilder.SetRenderFunc((DrawPassData data, RasterGraphContext context) =>
+                {
+                    SetupOpaqueDrawGlobals(context.cmd, data.MsaaSamples);
+
+                    var terrains = GrassTerrain.ActiveTerrains;
+                    for (int i = 0; i < terrains.Count; ++i)
+                        terrains[i]?.DrawLastRenderPassResult(context.cmd);
                 });
+            }
+
+            static void SetupOpaqueDrawGlobals(RasterCommandBuffer cmd, int msaaSamples)
+            {
+                cmd.SetGlobalVector(s_DrawObjectPassDataId, new Vector4(0f, 0f, 0f, 1f));
+                cmd.SetGlobalFloat(s_AlphaToMaskAvailableId, msaaSamples > 1 ? 1f : 0f);
             }
         }
     }

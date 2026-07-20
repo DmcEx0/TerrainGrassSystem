@@ -22,7 +22,7 @@ MonoBehaviour:
   DepthOcclusionBias: 0.25
   DepthOcclusionRadiusScale: 0.8
   DepthOcclusionSampleRadiusPixels: 2
-  HighLodDistance: 20
+  HighLodDistance: 58.7
   LodBlendBand: 8
   ThinningStartDistance: 30
   ThinningStrength: 1

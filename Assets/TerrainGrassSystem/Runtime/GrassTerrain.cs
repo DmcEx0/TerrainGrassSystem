@@ -220,7 +220,7 @@ namespace TerrainGrassSystem
             });
         }
 
-        internal void GenerateAndRenderFromRenderPass(
+        internal void GenerateFromRenderPass(
             UnsafeCommandBuffer cmd,
             Camera camera,
             TextureHandle occlusionDepthTexture,
@@ -247,7 +247,7 @@ namespace TerrainGrassSystem
             if (_wind == null) _wind = FindFirstObjectByType<GrassWind>();
             bool hasWind = _wind != null;
 
-            _renderer.Render(cmd, new GrassRenderer.FrameInput
+            _renderer.Generate(cmd, new GrassRenderer.FrameInput
             {
                 Camera           = camera,
                 TerrainHeightmap = _terrain.terrainData.heightmapTexture,
@@ -272,7 +272,7 @@ namespace TerrainGrassSystem
             _hasRenderPassResult = true;
         }
 
-        internal void DrawLastRenderPassResult(UnsafeCommandBuffer cmd)
+        internal void DrawLastRenderPassResult(RasterCommandBuffer cmd)
         {
             if (!ShouldRenderFromRenderPass) return;
             if (!ValidateConfig()) return;

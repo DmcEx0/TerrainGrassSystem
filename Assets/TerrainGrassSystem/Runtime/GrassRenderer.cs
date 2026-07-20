@@ -226,7 +226,7 @@ namespace TerrainGrassSystem
             SubmitDraw(_lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
-        internal void Render(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
+        internal void Generate(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
         {
             if (input.Camera == null) return;
             if (input.TerrainHeightmap == null || input.GrassMask == null || input.ClumpNoise == null) return;
@@ -266,12 +266,9 @@ namespace TerrainGrassSystem
             cmd.SetComputeIntParam   (_compute, s_IndexCountHighId, _highIndexCount);
             cmd.SetComputeIntParam   (_compute, s_IndexCountLowId,  _lowIndexCount);
             cmd.DispatchCompute(_compute, _buildArgsKernel, 1, 1, 1);
-
-            SubmitDraw(cmd, _highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
-            SubmitDraw(cmd, _lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
-        internal void DrawExisting(UnsafeCommandBuffer cmd)
+        internal void DrawExisting(RasterCommandBuffer cmd)
         {
             SubmitDraw(cmd, _highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
             SubmitDraw(cmd, _lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
@@ -462,7 +459,7 @@ namespace TerrainGrassSystem
             Graphics.RenderMeshIndirect(rp, mesh, args, 1);
         }
 
-        void SubmitDraw(UnsafeCommandBuffer cmd, Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
+        void SubmitDraw(RasterCommandBuffer cmd, Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
         {
             if (mesh == null || material == null) return;
 
@@ -478,6 +475,9 @@ namespace TerrainGrassSystem
             if (pass >= 0) return pass;
 
             pass = material.FindPass("UniversalForward");
+            if (pass >= 0) return pass;
+
+            pass = material.FindPass("Universal Forward Only");
             if (pass >= 0) return pass;
 
             pass = material.FindPass("UniversalForwardOnly");
