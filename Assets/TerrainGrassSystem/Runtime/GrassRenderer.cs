@@ -48,6 +48,10 @@ namespace TerrainGrassSystem
         static readonly int s_OcclusionViewId      = Shader.PropertyToID("_GrassDepthOcclusionView");
         static readonly int s_OcclusionViewProjId  = Shader.PropertyToID("_GrassDepthOcclusionViewProj");
         static readonly int s_ZBufferParamsId      = Shader.PropertyToID("_GrassZBufferParams");
+        static readonly int s_RenderingLayerId     = Shader.PropertyToID("unity_RenderingLayer");
+        static readonly int s_LightDataId          = Shader.PropertyToID("unity_LightData");
+        const uint k_DefaultRenderingLayerMask = 0x00000001u;
+        static readonly float s_DefaultRenderingLayerMaskFloat = Unity.Mathematics.math.asfloat(k_DefaultRenderingLayerMask);
 
         readonly ComputeShader _compute;
         readonly Material      _highMaterial;
@@ -443,8 +447,7 @@ namespace TerrainGrassSystem
         {
             if (mesh == null || material == null) return;
 
-            mpb.SetBuffer(s_GrassBladesId, blades);
-            mpb.SetInt(s_GrassLodSegmentsId, lodSegments);
+            BindDrawProperties(mpb, blades, lodSegments);
 
             var rp = new RenderParams(material)
             {
@@ -463,10 +466,19 @@ namespace TerrainGrassSystem
         {
             if (mesh == null || material == null) return;
 
+            int forwardPass = FindForwardPass(material);
+            if (forwardPass < 0) return;
+
+            BindDrawProperties(mpb, blades, lodSegments);
+            cmd.DrawMeshInstancedIndirect(mesh, 0, material, forwardPass, args, 0, mpb);
+        }
+
+        static void BindDrawProperties(MaterialPropertyBlock mpb, GraphicsBuffer blades, int lodSegments)
+        {
             mpb.SetBuffer(s_GrassBladesId, blades);
             mpb.SetInt(s_GrassLodSegmentsId, lodSegments);
-
-            cmd.DrawMeshInstancedIndirect(mesh, 0, material, FindForwardPass(material), args, 0, mpb);
+            mpb.SetVector(s_RenderingLayerId, new Vector4(s_DefaultRenderingLayerMaskFloat, 0f, 0f, 0f));
+            mpb.SetVector(s_LightDataId, new Vector4(1f, 1f, 1f, 0f));
         }
 
         static int FindForwardPass(Material material)
@@ -484,7 +496,7 @@ namespace TerrainGrassSystem
             if (pass >= 0) return pass;
 
             pass = material.FindPass("ForwardLit");
-            return pass >= 0 ? pass : 0;
+            return pass >= 0 ? pass : -1;
         }
 
         // Zero the args so a stale instanceCount cannot leak into a frame with no tiles.
