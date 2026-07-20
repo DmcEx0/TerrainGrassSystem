@@ -1,5 +1,8 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
+using UnityEngine.Rendering.Universal;
 
 namespace TerrainGrassSystem
 {
@@ -42,6 +45,52 @@ namespace TerrainGrassSystem
         readonly List<GrassRenderer.Tile> _visibleTiles = new(256);
         readonly Plane[] _frustumPlaneBuffer = new Plane[6];
 
+        static readonly List<GrassTerrain> s_ActiveTerrains = new(8);
+        static int s_LastRenderPassFrame = -1000;
+
+        internal static IReadOnlyList<GrassTerrain> ActiveTerrains => s_ActiveTerrains;
+        internal static bool HasAnyRenderPassTerrain
+        {
+            get
+            {
+                for (int i = 0; i < s_ActiveTerrains.Count; ++i)
+                {
+                    var terrain = s_ActiveTerrains[i];
+                    if (terrain != null && terrain.ShouldRenderFromRenderPass) return true;
+                }
+                return false;
+            }
+        }
+
+        internal static bool HasAnyDepthOcclusionRenderPassTerrain
+        {
+            get
+            {
+                for (int i = 0; i < s_ActiveTerrains.Count; ++i)
+                {
+                    var terrain = s_ActiveTerrains[i];
+                    if (terrain != null
+                        && terrain.ShouldRenderFromRenderPass
+                        && terrain.Settings.EnableDepthOcclusion)
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        internal bool ShouldRenderFromRenderPass =>
+            Application.isPlaying
+            && Settings != null
+            && Settings.RenderPath == GrassRenderPath.UniversalRenderPass;
+
+        internal static void MarkRenderPassQueued()
+        {
+            s_LastRenderPassFrame = Time.frameCount;
+        }
+
+        static bool RenderPassWasQueuedRecently =>
+            Time.frameCount - s_LastRenderPassFrame <= 1;
+
         // Cached terrain-derived state — refreshed when bounds change.
         Vector3 _terrainOrigin;
         Vector3 _terrainSize;
@@ -61,6 +110,7 @@ namespace TerrainGrassSystem
         void OnEnable()
         {
             _terrain = GetComponent<Terrain>();
+            if (!s_ActiveTerrains.Contains(this)) s_ActiveTerrains.Add(this);
             EnsureRenderer();
             RebuildTileGrid();
             CaptureValidateSnapshot();
@@ -68,6 +118,7 @@ namespace TerrainGrassSystem
 
         void OnDisable()
         {
+            s_ActiveTerrains.Remove(this);
             _renderer?.Dispose();
             _renderer = null;
         }
@@ -124,6 +175,7 @@ namespace TerrainGrassSystem
         void LateUpdate()
         {
             if (!ValidateConfig()) return;
+            if (ShouldRenderFromRenderPass && RenderPassWasQueuedRecently) return;
             EnsureRenderer();
             RebuildTileGridIfDirty();
 
@@ -164,6 +216,72 @@ namespace TerrainGrassSystem
                 WindDirection    = hasWind ? _wind.ActiveDirection : new Vector4(1f, 0f, 0f, 0f),
                 FrustumPlanes    = _frustumPlaneBuffer,
             });
+        }
+
+        internal void RenderFromRenderPass(
+            UnsafeCommandBuffer cmd,
+            Camera camera,
+            TextureHandle occlusionDepthTexture,
+            Matrix4x4 depthViewMatrix,
+            Matrix4x4 depthProjectionMatrix,
+            Vector4 depthTexelSize)
+        {
+            if (!ShouldRenderFromRenderPass) return;
+            if (!ValidateConfig()) return;
+            if (camera == null) return;
+
+            EnsureRenderer();
+            RebuildTileGridIfDirty();
+            if (_renderer == null) return;
+
+            _renderer.RenderBounds = WorldBounds();
+            _renderer.UploadGrassType(cmd, Type);
+
+            GeometryUtility.CalculateFrustumPlanes(
+                GrassRenderer.CalculateCullingMatrix(camera, Settings.FrustumPaddingDegrees), _frustumPlaneBuffer);
+
+            CollectVisibleTiles(camera);
+
+            if (_wind == null) _wind = FindFirstObjectByType<GrassWind>();
+            bool hasWind = _wind != null;
+
+            _renderer.Render(cmd, new GrassRenderer.FrameInput
+            {
+                Camera           = camera,
+                TerrainHeightmap = _terrain.terrainData.heightmapTexture,
+                GrassMask        = GrassMask,
+                ClumpNoise       = ClumpNoise,
+                TerrainOrigin    = _terrainOrigin,
+                TerrainSize      = _terrainSize,
+                Settings         = Settings,
+                VisibleTiles     = _visibleTiles,
+                WindEnabled      = hasWind && _wind.ActiveNoise != null,
+                WindNoise        = hasWind ? _wind.ActiveNoise : null,
+                WindParams       = hasWind ? _wind.ActiveParams : Vector4.zero,
+                WindDirection    = hasWind ? _wind.ActiveDirection : new Vector4(1f, 0f, 0f, 0f),
+                FrustumPlanes    = _frustumPlaneBuffer,
+                DepthOcclusionEnabled = Settings.EnableDepthOcclusion && occlusionDepthTexture.IsValid(),
+                DepthOcclusionViewMatrix = depthViewMatrix,
+                DepthOcclusionViewProjectionMatrix = depthProjectionMatrix * depthViewMatrix,
+                DepthOcclusionTexelSize = depthTexelSize,
+                ZBufferParams = CalculateZBufferParams(camera),
+            }, occlusionDepthTexture);
+        }
+
+        static Vector4 CalculateZBufferParams(Camera cam)
+        {
+            float near = Mathf.Max(0.0001f, cam.nearClipPlane);
+            float far = Mathf.Max(near + 0.0001f, cam.farClipPlane);
+            float farOverNear = far / near;
+
+            if (SystemInfo.usesReversedZBuffer)
+            {
+                float x = farOverNear - 1f;
+                return new Vector4(x, 1f, x / far, 1f / far);
+            }
+
+            float normalX = 1f - farOverNear;
+            return new Vector4(normalX, farOverNear, normalX / far, farOverNear / far);
         }
 
         bool ValidateConfig()
@@ -283,6 +401,115 @@ namespace TerrainGrassSystem
                     !GeometryUtility.TestPlanesAABB(_frustumPlaneBuffer, new Bounds(boxCenter, boxSize))) continue;
 
                 _visibleTiles.Add(new GrassRenderer.Tile(new Vector2(ox, oz), new Vector2(sx, sz)));
+            }
+        }
+    }
+
+    public sealed class GrassRenderPassFeature : ScriptableRendererFeature
+    {
+        [SerializeField] RenderPassEvent _renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
+        [SerializeField] bool _renderSceneView = true;
+
+        GrassRenderPass _pass;
+
+        public override void Create()
+        {
+            _pass = new GrassRenderPass
+            {
+                renderPassEvent = _renderPassEvent,
+                RenderSceneView = _renderSceneView,
+            };
+        }
+
+        public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
+        {
+            if (!GrassTerrain.HasAnyRenderPassTerrain) return;
+
+            _pass ??= new GrassRenderPass();
+            _pass.renderPassEvent = _renderPassEvent;
+            _pass.RenderSceneView = _renderSceneView;
+            _pass.ConfigureInput(GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain
+                ? ScriptableRenderPassInput.Depth
+                : ScriptableRenderPassInput.None);
+            GrassTerrain.MarkRenderPassQueued();
+            renderer.EnqueuePass(_pass);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            _pass = null;
+        }
+
+        sealed class GrassRenderPass : ScriptableRenderPass
+        {
+            internal bool RenderSceneView;
+
+            sealed class PassData
+            {
+                public TextureHandle ColorTexture;
+                public TextureHandle DepthTexture;
+                public TextureHandle OcclusionDepthTexture;
+                public Camera Camera;
+                public Matrix4x4 ViewMatrix;
+                public Matrix4x4 ProjectionMatrix;
+                public Vector4 DepthTexelSize;
+            }
+
+            public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+            {
+                var cameraData = frameData.Get<UniversalCameraData>();
+                if (cameraData.camera == null) return;
+                if (cameraData.isPreviewCamera) return;
+                if (cameraData.isSceneViewCamera && !RenderSceneView) return;
+
+                var resourceData = frameData.Get<UniversalResourceData>();
+                var colorTexture = resourceData.activeColorTexture;
+                var depthTexture = resourceData.activeDepthTexture;
+                if (!colorTexture.IsValid() || !depthTexture.IsValid()) return;
+
+                var occlusionDepthTexture = resourceData.cameraDepthTexture;
+                using var builder = renderGraph.AddUnsafePass<PassData>("Terrain Grass Render Pass", out var passData);
+
+                passData.ColorTexture = colorTexture;
+                passData.DepthTexture = depthTexture;
+                passData.OcclusionDepthTexture = occlusionDepthTexture;
+                passData.Camera = cameraData.camera;
+                passData.ViewMatrix = cameraData.GetViewMatrix();
+                bool renderIntoTexture = !resourceData.isActiveTargetBackBuffer || cameraData.targetTexture != null;
+                passData.ProjectionMatrix = GL.GetGPUProjectionMatrix(
+                    cameraData.GetProjectionMatrix(),
+                    renderIntoTexture);
+
+                var depthInfo = renderGraph.GetRenderTargetInfo(
+                    occlusionDepthTexture.IsValid() ? occlusionDepthTexture : depthTexture);
+                int width = Mathf.Max(1, depthInfo.width);
+                int height = Mathf.Max(1, depthInfo.height);
+                passData.DepthTexelSize = new Vector4(1f / width, 1f / height, width, height);
+
+                builder.UseTexture(colorTexture, AccessFlags.ReadWrite);
+                builder.UseTexture(depthTexture, AccessFlags.ReadWrite);
+                if (occlusionDepthTexture.IsValid())
+                    builder.UseTexture(occlusionDepthTexture, AccessFlags.Read);
+                builder.AllowPassCulling(false);
+                builder.AllowGlobalStateModification(true);
+                builder.SetRenderFunc((PassData data, UnsafeGraphContext context) =>
+                {
+                    context.cmd.SetRenderTarget(
+                        data.ColorTexture, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store,
+                        data.DepthTexture, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
+
+                    var terrains = GrassTerrain.ActiveTerrains;
+                    for (int i = 0; i < terrains.Count; ++i)
+                    {
+                        terrains[i]?.RenderFromRenderPass(
+                            context.cmd,
+                            data.Camera,
+                            data.OcclusionDepthTexture,
+                            data.ViewMatrix,
+                            data.ProjectionMatrix,
+                            data.DepthTexelSize);
+                    }
+                });
             }
         }
     }

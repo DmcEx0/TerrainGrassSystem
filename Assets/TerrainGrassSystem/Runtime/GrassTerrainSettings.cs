@@ -2,11 +2,21 @@ using UnityEngine;
 
 namespace TerrainGrassSystem
 {
+    public enum GrassRenderPath
+    {
+        LateUpdate = 0,
+        UniversalRenderPass = 1,
+    }
+
     // Density, tile layout, and LOD distances. Shared between terrains so a
     // project can dial in performance once.
     [CreateAssetMenu(menuName = "TerrainGrassSystem/Grass/Terrain Settings", fileName = "GrassTerrainSettings")]
     public class GrassTerrainSettings : ScriptableObject
     {
+        [Header("Rendering")]
+        [Tooltip("LateUpdate keeps the legacy Graphics.RenderMeshIndirect path. Universal Render Pass renders after opaque depth and can use same-frame depth occlusion.")]
+        public GrassRenderPath RenderPath = GrassRenderPath.LateUpdate;
+
         [Header("Tile Layout")]
         [Tooltip("Tile size in world meters. Smaller tiles = finer culling but more dispatches per frame.")]
         [Min(2f)] public float TileSize = 10f;
@@ -23,6 +33,18 @@ namespace TerrainGrassSystem
 
         [Tooltip("Extra perspective-frustum angle generated outside the visible screen. Prevents side bald strips when the camera turns quickly or is finalized after grass culling. 0 = exact frustum.")]
         [Range(0f, 20f)] public float FrustumPaddingDegrees = 8f;
+
+        [Tooltip("Only used by the Universal Render Pass path. Rejects blades hidden behind opaque camera depth before they are appended to the draw buffers.")]
+        public bool EnableDepthOcclusion = false;
+
+        [Tooltip("World-space safety bias in meters. Higher values keep more grass near depth edges and reduce popping.")]
+        [Min(0f)] public float DepthOcclusionBias = 0.25f;
+
+        [Tooltip("Scales the blade bounding radius used by the depth test. Lower values cull more aggressively.")]
+        [Range(0f, 2f)] public float DepthOcclusionRadiusScale = 0.8f;
+
+        [Tooltip("Extra cross samples around the blade center in screen pixels. 0 = center only, 1-4 = more conservative edge handling.")]
+        [Range(0, 4)] public int DepthOcclusionSampleRadiusPixels = 2;
 
         [Header("LOD")]
         [Tooltip("Blades closer than this are rendered with the high LOD mesh.")]

@@ -37,6 +37,7 @@ uint _IndexCountLow;
 Texture2D<float>  _TerrainHeightmap;       // R = normalized height
 Texture2D<float4> _GrassMask;              // R = placement, G = height mul, B = density mul, A = reserved
 Texture2D<float4> _ClumpNoise;             // RGBA = noise channels
+Texture2D<float>  _GrassOcclusionDepthTexture;
 // sampler_<TextureName> follows the texture's import settings.
 // sampler_LinearRepeat is a Unity-provided inline sampler with fixed
 // Linear/Repeat — used for the tileable clump noise regardless of how the
@@ -44,6 +45,7 @@ Texture2D<float4> _ClumpNoise;             // RGBA = noise channels
 SamplerState sampler_TerrainHeightmap;
 SamplerState sampler_GrassMask;
 SamplerState sampler_LinearRepeat;
+SamplerState sampler_PointClamp;
 
 // Single grass type for the whole terrain.
 StructuredBuffer<GrassTypeParams> _GrassType;
@@ -62,6 +64,11 @@ float4 _CullParams;              // x = maxDistanceSq, y = highLodDistance, z = 
 float4 _CameraPos;               // xyz = world camera, w = time
 uint   _DisableFrustumCull;      // 1 = generate blades regardless of frustum (edit mode); 0 = standard frustum cull
 float4 _ThinningParams;          // x = thinning start distance, y = thinning strength (0..1), zw = unused
+float4x4 _GrassDepthOcclusionView;
+float4x4 _GrassDepthOcclusionViewProj;
+float4 _GrassDepthOcclusionParams;    // x = enabled, y = world-space bias, z = sample radius in pixels, w = blade radius scale
+float4 _GrassDepthOcclusionTexelSize; // xy = 1 / texture size, zw = texture size
+float4 _GrassZBufferParams;
 
 // ---- Wind -------------------------------------------------------------------
 //
@@ -158,6 +165,46 @@ void ComputeWindBases(float2 worldXZ, uint bladeHash, bool needHigh, bool needLo
         float  n1  = _GrassWindNoise.SampleLevel(sampler_LinearRepeat, uv1, 0).g;
         windHigh = common * saturate(n0 * 0.7 + n1 * 0.5);
     }
+}
+
+float LinearEyeDepthFromRaw(float rawDepth)
+{
+    return rcp(_GrassZBufferParams.z * rawDepth + _GrassZBufferParams.w);
+}
+
+bool DepthSampleOccludes(float2 uv, float grassFrontEyeDepth)
+{
+    float rawDepth = _GrassOcclusionDepthTexture.SampleLevel(sampler_PointClamp, uv, 0).r;
+    float occluderEyeDepth = LinearEyeDepthFromRaw(rawDepth);
+    return occluderEyeDepth + _GrassDepthOcclusionParams.y < grassFrontEyeDepth;
+}
+
+bool OccludedByCameraDepth(float3 sphereCenter, float sphereRadius)
+{
+    if (_GrassDepthOcclusionParams.x < 0.5) return false;
+
+    float4 clip = mul(_GrassDepthOcclusionViewProj, float4(sphereCenter, 1.0));
+    if (clip.w <= 1e-5) return false;
+
+    float2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    if (any(uv < 0.0) || any(uv > 1.0)) return false;
+
+    float3 viewPos = mul(_GrassDepthOcclusionView, float4(sphereCenter, 1.0)).xyz;
+    float eyeDepth = -viewPos.z;
+    if (eyeDepth <= 0.0) return false;
+
+    float radiusScale = max(0.0, _GrassDepthOcclusionParams.w);
+    float grassFrontEyeDepth = max(0.0, eyeDepth - sphereRadius * radiusScale);
+    if (!DepthSampleOccludes(uv, grassFrontEyeDepth)) return false;
+
+    float sampleRadiusPixels = max(0.0, _GrassDepthOcclusionParams.z);
+    if (sampleRadiusPixels <= 0.0) return true;
+
+    float2 offset = _GrassDepthOcclusionTexelSize.xy * sampleRadiusPixels;
+    return DepthSampleOccludes(uv + float2( offset.x, 0.0), grassFrontEyeDepth)
+        && DepthSampleOccludes(uv + float2(-offset.x, 0.0), grassFrontEyeDepth)
+        && DepthSampleOccludes(uv + float2(0.0,  offset.y), grassFrontEyeDepth)
+        && DepthSampleOccludes(uv + float2(0.0, -offset.y), grassFrontEyeDepth);
 }
 
 // ---- Kernels ----------------------------------------------------------------
@@ -267,6 +314,7 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     float distSq = dot(toCam, toCam);
     float maxDistSq = _CullParams.x;
     if (distSq > maxDistSq) return;
+    if (OccludedByCameraDepth(bladeCenter, bladeRadius)) return;
 
     // Surface normal deferred past all culls — only reached by blades that
     // passed placement, density, frustum, and distance checks.

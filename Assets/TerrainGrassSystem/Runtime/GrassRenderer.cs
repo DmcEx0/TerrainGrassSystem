@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
 
 namespace TerrainGrassSystem
 {
@@ -41,6 +42,12 @@ namespace TerrainGrassSystem
         static readonly int s_WindDirectionId      = Shader.PropertyToID("_GrassWindDirection");
         static readonly int s_WindEnabledId        = Shader.PropertyToID("_GrassWindEnabled");
         static readonly int s_ThinningParamsId      = Shader.PropertyToID("_ThinningParams");
+        static readonly int s_OcclusionDepthId     = Shader.PropertyToID("_GrassOcclusionDepthTexture");
+        static readonly int s_OcclusionParamsId    = Shader.PropertyToID("_GrassDepthOcclusionParams");
+        static readonly int s_OcclusionTexelSizeId = Shader.PropertyToID("_GrassDepthOcclusionTexelSize");
+        static readonly int s_OcclusionViewId      = Shader.PropertyToID("_GrassDepthOcclusionView");
+        static readonly int s_OcclusionViewProjId  = Shader.PropertyToID("_GrassDepthOcclusionViewProj");
+        static readonly int s_ZBufferParamsId      = Shader.PropertyToID("_GrassZBufferParams");
 
         readonly ComputeShader _compute;
         readonly Material      _highMaterial;
@@ -118,6 +125,12 @@ namespace TerrainGrassSystem
             _grassType.SetData(_grassTypeStaging);
         }
 
+        internal void UploadGrassType(UnsafeCommandBuffer cmd, GrassType type)
+        {
+            _grassTypeStaging[0] = type != null ? type.ToGpu() : default;
+            cmd.SetBufferData(_grassType, _grassTypeStaging);
+        }
+
         // Tile descriptor — the GrassTerrain pushes a list per frame.
         public readonly struct Tile
         {
@@ -148,6 +161,15 @@ namespace TerrainGrassSystem
             // Frustum planes pre-computed by GrassTerrain so BindCommonComputeInputs
             // does not recompute the culling matrix a second time this frame.
             public Plane[] FrustumPlanes;
+
+            // Optional camera-depth occlusion. Only the render-pass path can
+            // provide same-frame opaque depth; the legacy LateUpdate path keeps
+            // this disabled.
+            public bool DepthOcclusionEnabled;
+            public Matrix4x4 DepthOcclusionViewMatrix;
+            public Matrix4x4 DepthOcclusionViewProjectionMatrix;
+            public Vector4 DepthOcclusionTexelSize; // xy = 1/size, zw = size
+            public Vector4 ZBufferParams;
         }
 
         public void Render(in FrameInput input)
@@ -202,6 +224,51 @@ namespace TerrainGrassSystem
             // 6) Submit indirect draws — one per LOD.
             SubmitDraw(_highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
             SubmitDraw(_lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
+        }
+
+        internal void Render(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
+        {
+            if (input.Camera == null) return;
+            if (input.TerrainHeightmap == null || input.GrassMask == null || input.ClumpNoise == null) return;
+            if (input.VisibleTiles == null || input.VisibleTiles.Count == 0)
+            {
+                ResetArgsToZero(cmd);
+                return;
+            }
+
+            cmd.SetBufferCounterValue(_bladesHigh, 0);
+            cmd.SetBufferCounterValue(_bladesLow,  0);
+
+            BindCommonComputeInputs(cmd, input, occlusionDepthTexture);
+
+            var settings = input.Settings;
+            uint axis = (uint)settings.BladesPerTileAxis;
+            const uint threadGroupSize = 8;
+            uint groupCount = (axis + threadGroupSize - 1) / threadGroupSize;
+
+            for (int i = 0; i < input.VisibleTiles.Count; ++i)
+            {
+                var tile = input.VisibleTiles[i];
+                cmd.SetComputeVectorParam(_compute, s_TileOriginSizeId,
+                    new Vector4(tile.OriginXZ.x, tile.OriginXZ.y, tile.SizeXZ.x, tile.SizeXZ.y));
+                cmd.SetComputeIntParams(_compute, s_GridSizeCountsId,
+                    settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
+                cmd.DispatchCompute(_compute, _generateKernel, (int)groupCount, (int)groupCount, 1);
+            }
+
+            cmd.CopyCounterValue(_bladesHigh, _countHigh, 0);
+            cmd.CopyCounterValue(_bladesLow,  _countLow,  0);
+
+            cmd.SetComputeBufferParam(_compute, _buildArgsKernel, s_IndirectArgsHighId, _argsHigh);
+            cmd.SetComputeBufferParam(_compute, _buildArgsKernel, s_IndirectArgsLowId,  _argsLow);
+            cmd.SetComputeBufferParam(_compute, _buildArgsKernel, s_CountHighId,        _countHigh);
+            cmd.SetComputeBufferParam(_compute, _buildArgsKernel, s_CountLowId,         _countLow);
+            cmd.SetComputeIntParam   (_compute, s_IndexCountHighId, _highIndexCount);
+            cmd.SetComputeIntParam   (_compute, s_IndexCountLowId,  _lowIndexCount);
+            cmd.DispatchCompute(_compute, _buildArgsKernel, 1, 1, 1);
+
+            SubmitDraw(cmd, _highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
+            SubmitDraw(cmd, _lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
 
         internal static Matrix4x4 CalculateCullingMatrix(Camera cam, float frustumPaddingDegrees)
@@ -295,6 +362,78 @@ namespace TerrainGrassSystem
             // frustum so authors can see grass behind / beside the camera
             // while painting. In play mode we always cull.
             _compute.SetInt(s_DisableFrustumCullId, Application.isPlaying ? 0 : 1);
+
+            _compute.SetTexture(_generateKernel, s_OcclusionDepthId, Texture2D.blackTexture);
+            _compute.SetVector(s_OcclusionParamsId, Vector4.zero);
+            _compute.SetVector(s_OcclusionTexelSizeId, Vector4.zero);
+            _compute.SetMatrix(s_OcclusionViewId, Matrix4x4.identity);
+            _compute.SetMatrix(s_OcclusionViewProjId, Matrix4x4.identity);
+            _compute.SetVector(s_ZBufferParamsId, input.ZBufferParams);
+        }
+
+        void BindCommonComputeInputs(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
+        {
+            var settings = input.Settings;
+            var cam = input.Camera;
+
+            cmd.SetComputeBufferParam (_compute, _generateKernel, s_BladesHighId,       _bladesHigh);
+            cmd.SetComputeBufferParam (_compute, _generateKernel, s_BladesLowId,        _bladesLow);
+            cmd.SetComputeBufferParam (_compute, _generateKernel, s_GrassTypeId,        _grassType);
+            cmd.SetComputeTextureParam(_compute, _generateKernel, s_TerrainHeightmapId, new RenderTargetIdentifier(input.TerrainHeightmap));
+            cmd.SetComputeTextureParam(_compute, _generateKernel, s_GrassMaskId,        new RenderTargetIdentifier(input.GrassMask));
+            cmd.SetComputeTextureParam(_compute, _generateKernel, s_ClumpNoiseId,       new RenderTargetIdentifier(input.ClumpNoise));
+
+            bool windOn = input.WindEnabled && input.WindNoise != null;
+            cmd.SetComputeIntParam(_compute, s_WindEnabledId, windOn ? 1 : 0);
+            cmd.SetComputeTextureParam(_compute, _generateKernel, s_WindNoiseId,
+                new RenderTargetIdentifier(windOn ? input.WindNoise : input.ClumpNoise));
+            cmd.SetComputeVectorParam(_compute, s_WindParamsId,    input.WindParams);
+            cmd.SetComputeVectorParam(_compute, s_WindDirectionId, input.WindDirection);
+
+            cmd.SetComputeVectorParam(_compute, s_TerrainOriginId,
+                new Vector4(input.TerrainOrigin.x, input.TerrainOrigin.y, input.TerrainOrigin.z, 0f));
+            cmd.SetComputeVectorParam(_compute, s_TerrainSizeId,
+                new Vector4(input.TerrainSize.x, input.TerrainSize.y, input.TerrainSize.z, 0f));
+
+            cmd.SetComputeVectorParam(_compute, s_CullParamsId, new Vector4(
+                settings.ComputeMaxDistanceSq(),
+                settings.HighLodDistance,
+                settings.LodBlendBand,
+                settings.ClumpScale));
+
+            cmd.SetComputeVectorParam(_compute, s_ThinningParamsId, new Vector4(
+                settings.ThinningStartDistance,
+                Mathf.Clamp01(settings.ThinningStrength),
+                0f, 0f));
+
+            cmd.SetComputeVectorParam(_compute, s_CameraPosId, new Vector4(
+                cam.transform.position.x,
+                cam.transform.position.y,
+                cam.transform.position.z,
+                Time.time));
+
+            var planes = input.FrustumPlanes;
+            for (int i = 0; i < 6; ++i)
+            {
+                _frustumPlanes[i] = new Vector4(planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].distance);
+            }
+            cmd.SetComputeVectorArrayParam(_compute, s_FrustumPlanesId, _frustumPlanes);
+            cmd.SetComputeIntParam(_compute, s_DisableFrustumCullId, Application.isPlaying ? 0 : 1);
+
+            bool hasOcclusionDepth = occlusionDepthTexture.IsValid();
+            if (hasOcclusionDepth)
+                cmd.SetComputeTextureParam(_compute, _generateKernel, s_OcclusionDepthId, occlusionDepthTexture);
+            else
+                cmd.SetComputeTextureParam(_compute, _generateKernel, s_OcclusionDepthId, new RenderTargetIdentifier(Texture2D.blackTexture));
+            cmd.SetComputeVectorParam(_compute, s_OcclusionParamsId, new Vector4(
+                input.DepthOcclusionEnabled && hasOcclusionDepth ? 1f : 0f,
+                settings.DepthOcclusionBias,
+                settings.DepthOcclusionSampleRadiusPixels,
+                settings.DepthOcclusionRadiusScale));
+            cmd.SetComputeVectorParam(_compute, s_OcclusionTexelSizeId, input.DepthOcclusionTexelSize);
+            cmd.SetComputeMatrixParam(_compute, s_OcclusionViewId, input.DepthOcclusionViewMatrix);
+            cmd.SetComputeMatrixParam(_compute, s_OcclusionViewProjId, input.DepthOcclusionViewProjectionMatrix);
+            cmd.SetComputeVectorParam(_compute, s_ZBufferParamsId, input.ZBufferParams);
         }
 
         void SubmitDraw(Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
@@ -317,12 +456,43 @@ namespace TerrainGrassSystem
             Graphics.RenderMeshIndirect(rp, mesh, args, 1);
         }
 
+        void SubmitDraw(UnsafeCommandBuffer cmd, Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
+        {
+            if (mesh == null || material == null) return;
+
+            mpb.SetBuffer(s_GrassBladesId, blades);
+            mpb.SetInt(s_GrassLodSegmentsId, lodSegments);
+
+            cmd.DrawMeshInstancedIndirect(mesh, 0, material, FindForwardPass(material), args, 0, mpb);
+        }
+
+        static int FindForwardPass(Material material)
+        {
+            int pass = material.FindPass("Universal Forward");
+            if (pass >= 0) return pass;
+
+            pass = material.FindPass("UniversalForward");
+            if (pass >= 0) return pass;
+
+            pass = material.FindPass("UniversalForwardOnly");
+            if (pass >= 0) return pass;
+
+            pass = material.FindPass("ForwardLit");
+            return pass >= 0 ? pass : 0;
+        }
+
         // Zero the args so a stale instanceCount cannot leak into a frame with no tiles.
         readonly uint[] _zeroArgs = new uint[5];
         void ResetArgsToZero()
         {
             _argsHigh.SetData(_zeroArgs);
             _argsLow.SetData(_zeroArgs);
+        }
+
+        void ResetArgsToZero(UnsafeCommandBuffer cmd)
+        {
+            cmd.SetBufferData(_argsHigh, _zeroArgs);
+            cmd.SetBufferData(_argsLow,  _zeroArgs);
         }
 
         public void Dispose()
