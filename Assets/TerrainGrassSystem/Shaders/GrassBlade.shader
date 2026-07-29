@@ -120,6 +120,47 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 // as two short sub-blades. No-op for normal blades.
                 ApplyBladeFold(v, facing, up, blade);
 
+                if (_GrassLodSegments <= 1)
+                {
+                    // The distant mesh is one triangle, so it has no internal
+                    // Bezier rows to curve. Face it toward the camera and avoid
+                    // the expensive per-vertex atan2/Rodrigues twist.
+                    float3 toCamera = normalize(_WorldSpaceCameraPos.xyz - blade.position);
+                    float3 lowFacing = normalize(
+                        toCamera - up * dot(toCamera, up) + float3(1e-6, 0.0, 0.0));
+                    float3 lowRight = normalize(cross(up, lowFacing));
+
+                    float tiltSin, tiltCos;
+                    sincos(blade.tiltAngle, tiltSin, tiltCos);
+
+                    float h = blade.height * blade.lodBlend;
+                    float wAtV = blade.width * (1.0 - v * 0.75);
+                    float3 localPos = (up * tiltCos + lowFacing * tiltSin) * (h * v)
+                                    + lowRight * ((side * 0.5) * wAtV);
+                    float3 worldPos = blade.position + localPos
+                                    + ApplyGrassWind(blade.windBase, v)
+                                    + ApplyGrassInteractionPacked(blade.interactionPacked, v, _InteractionMaxPush);
+
+                    float3 lowNormal = normalize(lowFacing * tiltCos - up * tiltSin);
+                    float3 curvedNormal = normalize(lerp(
+                        lowNormal,
+                        lowRight * sign(side + 1e-4),
+                        _CurvedNormalAmount * abs(side)));
+
+                    OUT.positionWS = worldPos;
+                    OUT.positionCS = TransformWorldToHClip(worldPos);
+                    OUT.normalWS = curvedNormal;
+
+                    float aoFactor = lerp(1.0 - _AOStrength, 1.0, v);
+                    OUT.colorBase = blade.color * aoFactor
+                                  * lerp(1.0, _TipBoost, v)
+                                  * _BaseColorMultiplier.rgb;
+                    OUT.uv = float2(side * 0.5 + 0.5, v);
+                    OUT.fogFactor = ComputeFogFactor(OUT.positionCS.z);
+                    OUT.shadowCoord = TransformWorldToShadowCoord(worldPos);
+                    return OUT;
+                }
+
                 float3 right  = normalize(cross(up, facing));
 
                 // Camera-facing setup. Triggers only when the blade is close to
@@ -169,7 +210,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
 
                 float3 worldPos = blade.position + localPos
                                 + ApplyGrassWind(blade.windBase, v)
-                                + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
+                                + ApplyGrassInteractionPacked(blade.interactionPacked, v, _InteractionMaxPush);
 
                 // Curved fake normals using the rotated basis and a world-space
                 // tangent — keeps lighting consistent with the geometry twist.
@@ -195,7 +236,6 @@ Shader "TerrainGrassSystem/Grass/Blade"
             half4 GrassFragment(Varyings IN, FRONT_FACE_TYPE isFrontFace : FRONT_FACE_SEMANTIC) : SV_Target
             {
                 float3 N = normalize(IN.normalWS);
-                float3 V = normalize(_WorldSpaceCameraPos.xyz - IN.positionWS);
 
                 // Two-sided lighting: flip normal on the back-facing side so both
                 // sides receive sensible diffuse.
@@ -205,15 +245,19 @@ Shader "TerrainGrassSystem/Grass/Blade"
 
                 float NdotL = saturate(dot(N, mainLight.direction));
                 float3 diffuse = mainLight.color * (NdotL * mainLight.shadowAttenuation);
-
-                // Cheap specular highlight for backlit grass.
-                float3 H = normalize(mainLight.direction + V);
-                float NdotH = saturate(dot(N, H));
-                float spec  = pow(NdotH, _SpecularPower) * _SpecularStrength;
-
                 float3 ambient = SampleSH(N);
+                float3 col = IN.colorBase * (diffuse + ambient);
 
-                float3 col = IN.colorBase * (diffuse + ambient) + spec * mainLight.color;
+                // Specular is relevant only for nearby curved blades. Avoid a
+                // normalize + pow for the distant one-triangle LOD.
+                if (_GrassLodSegments > 1 && _SpecularStrength > 0.0)
+                {
+                    float3 V = normalize(_WorldSpaceCameraPos.xyz - IN.positionWS);
+                    float3 H = normalize(mainLight.direction + V);
+                    float NdotH = saturate(dot(N, H));
+                    float spec = pow(NdotH, _SpecularPower) * _SpecularStrength;
+                    col += spec * mainLight.color;
+                }
 
                 col = MixFog(col, IN.fogFactor);
                 return half4(col, 1.0);
@@ -325,7 +369,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 float3 localPos = rFacing * curve.z + up * curve.y + rRight * (side * 0.5 * wAtV);
                 float3 worldPos = blade.position + localPos
                                 + ApplyGrassWind(blade.windBase, v)
-                                + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
+                                + ApplyGrassInteractionPacked(blade.interactionPacked, v, _InteractionMaxPush);
 
                 float3 lightDirWS = _MainLightPosition.xyz;
                 float3 normalWS = up;
@@ -443,7 +487,7 @@ Shader "TerrainGrassSystem/Grass/Blade"
                 float3 worldPos = blade.position
                     + rFacing * curve.z + up * curve.y + rRight * (side * 0.5 * wAtV)
                     + ApplyGrassWind(blade.windBase, v)
-                    + ApplyGrassInteraction(blade.position, v, _InteractionMaxPush);
+                    + ApplyGrassInteractionPacked(blade.interactionPacked, v, _InteractionMaxPush);
 
                 return TransformWorldToHClip(worldPos);
             }

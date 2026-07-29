@@ -27,7 +27,8 @@ namespace TerrainGrassSystem
         static readonly int s_GrassMaskId          = Shader.PropertyToID("_GrassMask");
         static readonly int s_ClumpNoiseId         = Shader.PropertyToID("_ClumpNoise");
         static readonly int s_GrassTypeId          = Shader.PropertyToID("_GrassType");
-        static readonly int s_TileOriginSizeId     = Shader.PropertyToID("_TileOriginSize");
+        static readonly int s_VisibleTilesId       = Shader.PropertyToID("_VisibleTiles");
+        static readonly int s_VisibleTileCountId   = Shader.PropertyToID("_VisibleTileCount");
         static readonly int s_GridSizeCountsId     = Shader.PropertyToID("_GridSizeCounts");
         static readonly int s_TerrainOriginId      = Shader.PropertyToID("_TerrainOrigin");
         static readonly int s_TerrainSizeId        = Shader.PropertyToID("_TerrainSize");
@@ -41,12 +42,16 @@ namespace TerrainGrassSystem
         static readonly int s_WindParamsId         = Shader.PropertyToID("_GrassWindParams");
         static readonly int s_WindDirectionId      = Shader.PropertyToID("_GrassWindDirection");
         static readonly int s_WindEnabledId        = Shader.PropertyToID("_GrassWindEnabled");
+        static readonly int s_InteractionSourcesId = Shader.PropertyToID("_GrassInteractionSources");
+        static readonly int s_InteractionCountId   = Shader.PropertyToID("_GrassInteractionCount");
         static readonly int s_ThinningParamsId      = Shader.PropertyToID("_ThinningParams");
         static readonly int s_OcclusionDepthId     = Shader.PropertyToID("_GrassOcclusionDepthTexture");
         static readonly int s_OcclusionParamsId    = Shader.PropertyToID("_GrassDepthOcclusionParams");
         static readonly int s_OcclusionTexelSizeId = Shader.PropertyToID("_GrassDepthOcclusionTexelSize");
         static readonly int s_OcclusionViewId      = Shader.PropertyToID("_GrassDepthOcclusionView");
         static readonly int s_OcclusionViewProjId  = Shader.PropertyToID("_GrassDepthOcclusionViewProj");
+        static readonly int s_OcclusionExclusionsId = Shader.PropertyToID("_GrassDepthOcclusionExclusions");
+        static readonly int s_OcclusionExclusionCountId = Shader.PropertyToID("_GrassDepthOcclusionExclusionCount");
         static readonly int s_ZBufferParamsId      = Shader.PropertyToID("_GrassZBufferParams");
         static readonly int s_RenderingLayerId     = Shader.PropertyToID("unity_RenderingLayer");
         static readonly int s_LightDataId          = Shader.PropertyToID("unity_LightData");
@@ -78,6 +83,8 @@ namespace TerrainGrassSystem
         readonly GraphicsBuffer _countHigh;
         readonly GraphicsBuffer _countLow;
         readonly GraphicsBuffer _grassType;
+        GraphicsBuffer _visibleTiles;
+        Vector4[] _visibleTileStaging = new Vector4[256];
 
         readonly Vector4[] _frustumPlanes = new Vector4[6];
         readonly MaterialPropertyBlock _mpbHigh = new();
@@ -124,6 +131,8 @@ namespace TerrainGrassSystem
 
             _grassType = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
                 1, GrassTypeParamsGpu.SizeBytes);
+            _visibleTiles = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+                _visibleTileStaging.Length, sizeof(float) * 4);
         }
 
         readonly GrassTypeParamsGpu[] _grassTypeStaging = new GrassTypeParamsGpu[1];
@@ -169,6 +178,8 @@ namespace TerrainGrassSystem
             public Texture WindNoise;
             public Vector4 WindParams;
             public Vector4 WindDirection;
+            public Vector4[] InteractionSources;
+            public int InteractionSourceCount;
 
             // Frustum planes pre-computed by GrassTerrain so BindCommonComputeInputs
             // does not recompute the culling matrix a second time this frame.
@@ -182,6 +193,8 @@ namespace TerrainGrassSystem
             public Matrix4x4 DepthOcclusionViewProjectionMatrix;
             public Vector4 DepthOcclusionTexelSize; // xy = 1/size, zw = size
             public Vector4 ZBufferParams;
+            public Vector4[] DepthOcclusionExclusions;
+            public int DepthOcclusionExclusionCount;
         }
 
         public void Render(in FrameInput input)
@@ -203,21 +216,19 @@ namespace TerrainGrassSystem
             // 2) Prepare globals shared across all tile dispatches.
             BindCommonComputeInputs(input);
 
-            // 3) Per-tile compute dispatch.
+            // 3) Upload all visible tile descriptors and process them in the Z
+            //    dimension of one dispatch. This replaces hundreds of tiny
+            //    dispatches (and their parameter changes) with a single call.
             var settings = input.Settings;
             uint axis = (uint)settings.BladesPerTileAxis;
             const uint threadGroupSize = 8;
             uint groupCount = (axis + threadGroupSize - 1) / threadGroupSize;
-
-            for (int i = 0; i < input.VisibleTiles.Count; ++i)
-            {
-                var tile = input.VisibleTiles[i];
-                _compute.SetVector(s_TileOriginSizeId,
-                    new Vector4(tile.OriginXZ.x, tile.OriginXZ.y, tile.SizeXZ.x, tile.SizeXZ.y));
-                _compute.SetInts(s_GridSizeCountsId,
-                    settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
-                _compute.Dispatch(_generateKernel, (int)groupCount, (int)groupCount, 1);
-            }
+            int tileCount = UploadVisibleTiles(input.VisibleTiles);
+            _compute.SetBuffer(_generateKernel, s_VisibleTilesId, _visibleTiles);
+            _compute.SetInt(s_VisibleTileCountId, tileCount);
+            _compute.SetInts(s_GridSizeCountsId,
+                settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
+            _compute.Dispatch(_generateKernel, (int)groupCount, (int)groupCount, tileCount);
 
             // 4) Copy append-buffer counts into the small uint buffers the args
             //    kernel reads.
@@ -257,16 +268,13 @@ namespace TerrainGrassSystem
             uint axis = (uint)settings.BladesPerTileAxis;
             const uint threadGroupSize = 8;
             uint groupCount = (axis + threadGroupSize - 1) / threadGroupSize;
-
-            for (int i = 0; i < input.VisibleTiles.Count; ++i)
-            {
-                var tile = input.VisibleTiles[i];
-                cmd.SetComputeVectorParam(_compute, s_TileOriginSizeId,
-                    new Vector4(tile.OriginXZ.x, tile.OriginXZ.y, tile.SizeXZ.x, tile.SizeXZ.y));
-                cmd.SetComputeIntParams(_compute, s_GridSizeCountsId,
-                    settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
-                cmd.DispatchCompute(_compute, _generateKernel, (int)groupCount, (int)groupCount, 1);
-            }
+            int tileCount = StageVisibleTiles(input.VisibleTiles);
+            cmd.SetBufferData(_visibleTiles, _visibleTileStaging);
+            cmd.SetComputeBufferParam(_compute, _generateKernel, s_VisibleTilesId, _visibleTiles);
+            cmd.SetComputeIntParam(_compute, s_VisibleTileCountId, tileCount);
+            cmd.SetComputeIntParams(_compute, s_GridSizeCountsId,
+                settings.BladesPerTileAxis, settings.BladesPerTileAxis, 0, 0);
+            cmd.DispatchCompute(_compute, _generateKernel, (int)groupCount, (int)groupCount, tileCount);
 
             cmd.CopyCounterValue(_bladesHigh, _countHigh, 0);
             cmd.CopyCounterValue(_bladesLow,  _countLow,  0);
@@ -339,6 +347,13 @@ namespace TerrainGrassSystem
             _compute.SetTexture(_generateKernel, s_WindNoiseId, windOn ? input.WindNoise : input.ClumpNoise);
             _compute.SetVector(s_WindParamsId,    input.WindParams);
             _compute.SetVector(s_WindDirectionId, input.WindDirection);
+            int interactionCount = Mathf.Clamp(
+                input.InteractionSourceCount,
+                0,
+                input.InteractionSources?.Length ?? 0);
+            if (interactionCount > 0)
+                _compute.SetVectorArray(s_InteractionSourcesId, input.InteractionSources);
+            _compute.SetInt(s_InteractionCountId, interactionCount);
 
             _compute.SetVector(s_TerrainOriginId,
                 new Vector4(input.TerrainOrigin.x, input.TerrainOrigin.y, input.TerrainOrigin.z, 0f));
@@ -383,6 +398,7 @@ namespace TerrainGrassSystem
             _compute.SetVector(s_OcclusionTexelSizeId, Vector4.zero);
             _compute.SetMatrix(s_OcclusionViewId, Matrix4x4.identity);
             _compute.SetMatrix(s_OcclusionViewProjId, Matrix4x4.identity);
+            _compute.SetInt(s_OcclusionExclusionCountId, 0);
             _compute.SetVector(s_ZBufferParamsId, input.ZBufferParams);
         }
 
@@ -404,6 +420,13 @@ namespace TerrainGrassSystem
                 new RenderTargetIdentifier(windOn ? input.WindNoise : input.ClumpNoise));
             cmd.SetComputeVectorParam(_compute, s_WindParamsId,    input.WindParams);
             cmd.SetComputeVectorParam(_compute, s_WindDirectionId, input.WindDirection);
+            int interactionCount = Mathf.Clamp(
+                input.InteractionSourceCount,
+                0,
+                input.InteractionSources?.Length ?? 0);
+            if (interactionCount > 0)
+                cmd.SetComputeVectorArrayParam(_compute, s_InteractionSourcesId, input.InteractionSources);
+            cmd.SetComputeIntParam(_compute, s_InteractionCountId, interactionCount);
 
             cmd.SetComputeVectorParam(_compute, s_TerrainOriginId,
                 new Vector4(input.TerrainOrigin.x, input.TerrainOrigin.y, input.TerrainOrigin.z, 0f));
@@ -448,7 +471,47 @@ namespace TerrainGrassSystem
             cmd.SetComputeVectorParam(_compute, s_OcclusionTexelSizeId, input.DepthOcclusionTexelSize);
             cmd.SetComputeMatrixParam(_compute, s_OcclusionViewId, input.DepthOcclusionViewMatrix);
             cmd.SetComputeMatrixParam(_compute, s_OcclusionViewProjId, input.DepthOcclusionViewProjectionMatrix);
+            int exclusionCount = Mathf.Clamp(
+                input.DepthOcclusionExclusionCount,
+                0,
+                input.DepthOcclusionExclusions?.Length ?? 0);
+            if (exclusionCount > 0)
+                cmd.SetComputeVectorArrayParam(_compute, s_OcclusionExclusionsId, input.DepthOcclusionExclusions);
+            cmd.SetComputeIntParam(_compute, s_OcclusionExclusionCountId, exclusionCount);
             cmd.SetComputeVectorParam(_compute, s_ZBufferParamsId, input.ZBufferParams);
+        }
+
+        int UploadVisibleTiles(IReadOnlyList<Tile> tiles)
+        {
+            int count = StageVisibleTiles(tiles);
+            _visibleTiles.SetData(_visibleTileStaging);
+            return count;
+        }
+
+        int StageVisibleTiles(IReadOnlyList<Tile> tiles)
+        {
+            int count = tiles?.Count ?? 0;
+            EnsureVisibleTileCapacity(count);
+
+            for (int i = 0; i < count; ++i)
+            {
+                Tile tile = tiles[i];
+                _visibleTileStaging[i] = new Vector4(
+                    tile.OriginXZ.x, tile.OriginXZ.y, tile.SizeXZ.x, tile.SizeXZ.y);
+            }
+
+            return count;
+        }
+
+        void EnsureVisibleTileCapacity(int required)
+        {
+            if (required <= _visibleTileStaging.Length) return;
+
+            int capacity = Mathf.NextPowerOfTwo(required);
+            _visibleTiles?.Dispose();
+            _visibleTileStaging = new Vector4[capacity];
+            _visibleTiles = new GraphicsBuffer(
+                GraphicsBuffer.Target.Structured, capacity, sizeof(float) * 4);
         }
 
         void SubmitDraw(Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
@@ -540,6 +603,7 @@ namespace TerrainGrassSystem
             _countHigh?.Dispose();
             _countLow?.Dispose();
             _grassType?.Dispose();
+            _visibleTiles?.Dispose();
 
             if (Application.isPlaying)
             {

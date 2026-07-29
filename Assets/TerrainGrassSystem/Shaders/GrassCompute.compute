@@ -28,6 +28,7 @@ RWStructuredBuffer<IndirectArgs> _IndirectArgsLow;
 // Counters from AppendStructuredBuffer.CopyCount.
 StructuredBuffer<uint> _CountHigh;
 StructuredBuffer<uint> _CountLow;
+StructuredBuffer<float4> _VisibleTiles; // xy = world XZ origin, zw = world XZ size
 
 uint _IndexCountHigh;
 uint _IndexCountLow;
@@ -56,7 +57,7 @@ StructuredBuffer<GrassTypeParams> _GrassType;
 // shader; it does not include URP's Core.hlsl). ComputeShader.SetVector /
 // SetInts in C# bind directly to these.
 
-float4 _TileOriginSize;          // xy = tile origin in world XZ, zw = tile size in world XZ
+uint   _VisibleTileCount;
 uint4  _GridSizeCounts;          // xy = grass cells per axis in this tile, zw = pad
 float4 _TerrainOrigin;           // xyz = origin, w = unused
 float4 _TerrainSize;             // xyz = size, w = unused
@@ -68,6 +69,8 @@ float4x4 _GrassDepthOcclusionView;
 float4x4 _GrassDepthOcclusionViewProj;
 float4 _GrassDepthOcclusionParams;    // x = enabled, y = world-space bias, z = sample radius in pixels, w = blade radius scale
 float4 _GrassDepthOcclusionTexelSize; // xy = 1 / texture size, zw = texture size
+float4 _GrassDepthOcclusionExclusions[8]; // xyz = sphere centre, w = radius
+uint _GrassDepthOcclusionExclusionCount;
 float4 _GrassZBufferParams;
 
 // ---- Wind -------------------------------------------------------------------
@@ -85,6 +88,8 @@ Texture2D<float4> _GrassWindNoise;
 float4 _GrassWindParams;         // x = strength, y = frequency, z = scrollSpeed, w = gustSpeed
 float4 _GrassWindDirection;      // xz = direction (unit), w = time
 uint   _GrassWindEnabled;        // 1 = a GrassWind component is driving wind; 0 = no wind
+float4 _GrassInteractionSources[8]; // xyz = source position, w = radius
+uint   _GrassInteractionCount;
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -167,6 +172,28 @@ void ComputeWindBases(float2 worldXZ, uint bladeHash, bool needHigh, bool needLo
     }
 }
 
+uint PackGrassInteraction(float3 bladeRoot)
+{
+    float2 offset = float2(0.0, 0.0);
+    [loop]
+    for (uint i = 0u; i < _GrassInteractionCount; ++i)
+    {
+        float4 src = _GrassInteractionSources[i];
+        float2 delta = bladeRoot.xz - src.xz;
+        float distSq = dot(delta, delta);
+        float radiusSq = src.w * src.w;
+        if (distSq >= radiusSq || distSq <= 1e-6) continue;
+
+        float dist = sqrt(distSq);
+        float t = 1.0 - saturate(dist / src.w);
+        offset += delta * rsqrt(distSq) * (t * t);
+    }
+
+    uint x = f32tof16(offset.x);
+    uint z = f32tof16(offset.y);
+    return x | (z << 16);
+}
+
 float LinearEyeDepthFromRaw(float rawDepth)
 {
     return rcp(_GrassZBufferParams.z * rawDepth + _GrassZBufferParams.w);
@@ -197,6 +224,26 @@ bool OccludedByCameraDepth(float3 sphereCenter, float sphereRadius)
     float grassFrontEyeDepth = max(0.0, eyeDepth - sphereRadius * radiusScale);
     if (!DepthSampleOccludes(uv, grassFrontEyeDepth)) return false;
 
+    // A third-person player is commonly present in camera depth. Treating it
+    // as a generic occluder makes a conspicuous hole in the grass behind the
+    // character. Interaction sources can provide conservative protection
+    // spheres; if the camera-to-blade segment crosses one, keep the blade.
+    float3 cameraToBlade = sphereCenter - _CameraPos.xyz;
+    float bladeDistance = length(cameraToBlade);
+    float3 rayDirection = cameraToBlade / max(bladeDistance, 1e-5);
+    [loop]
+    for (uint i = 0u; i < _GrassDepthOcclusionExclusionCount; ++i)
+    {
+        float4 exclusion = _GrassDepthOcclusionExclusions[i];
+        float3 cameraToExclusion = exclusion.xyz - _CameraPos.xyz;
+        float projectedDistance = dot(cameraToExclusion, rayDirection);
+        if (projectedDistance <= 0.0 || projectedDistance >= bladeDistance) continue;
+
+        float3 nearestDelta = cameraToExclusion - rayDirection * projectedDistance;
+        if (dot(nearestDelta, nearestDelta) <= exclusion.w * exclusion.w)
+            return false;
+    }
+
     float sampleRadiusPixels = max(0.0, _GrassDepthOcclusionParams.z);
     if (sampleRadiusPixels <= 0.0) return true;
 
@@ -213,10 +260,11 @@ bool OccludedByCameraDepth(float3 sphereCenter, float sphereRadius)
 void CSGenerate(uint3 id : SV_DispatchThreadID)
 {
     uint2 gridSize = _GridSizeCounts.xy;
-    if (id.x >= gridSize.x || id.y >= gridSize.y) return;
+    if (id.x >= gridSize.x || id.y >= gridSize.y || id.z >= _VisibleTileCount) return;
+    float4 tileOriginSize = _VisibleTiles[id.z];
 
     // Stable per-cell hash so blade placement is deterministic across frames.
-    uint hash = Hash2(id.xy + uint2(_TileOriginSize.xy * 31.0));
+    uint hash = Hash2(id.xy + uint2(tileOriginSize.xy * 31.0));
 
     // Jitter sample inside the cell to break the lattice. Amplitude > 1 lets
     // blades spill across cell boundaries, which is necessary to hide the row
@@ -229,16 +277,32 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     float2 jrot  = float2(j.x * ca - j.y * sa, j.x * sa + j.y * ca);
     float2 cellUV = (float2(id.xy) + 0.5 + jrot * 1.5) / float2(gridSize);
 
-    float2 worldXZ = _TileOriginSize.xy + cellUV * _TileOriginSize.zw;
+    float2 worldXZ = tileOriginSize.xy + cellUV * tileOriginSize.zw;
 
     // XZ-only distance pre-cull before any texture fetch — cheaply rejects
     // blades beyond the max draw distance using only arithmetic.
     float2 toCamXZ = worldXZ - _CameraPos.xz;
-    if (dot(toCamXZ, toCamXZ) > _CullParams.x) return;
+    float distXZSq = dot(toCamXZ, toCamXZ);
+    if (distXZSq > _CullParams.x) return;
 
-    // Terrain height + bail if blade falls off the heightmap.
-    float worldY = SampleTerrainHeight(worldXZ);
-    if (worldY < -1e8) return;
+    // Distant blades are thinned later using the full 3D distance. Apply the
+    // same stable roll conservatively in XZ first, once a cell cannot route to
+    // High LOD, so rejected horizon cells pay no texture-fetch cost at all.
+    float maxDrawDistance = sqrt(_CullParams.x);
+    float highLodEnd = _CullParams.y + max(0.001, _CullParams.z) * 0.5;
+    float distXZ = sqrt(distXZSq);
+    if (distXZ > highLodEnd)
+    {
+        float earlyThinT = saturate(
+            (distXZ - _ThinningParams.x)
+            / max(0.001, maxDrawDistance - _ThinningParams.x));
+        float earlyThinKeep = 1.0 - _ThinningParams.y * earlyThinT;
+        if (HashToFloat(hash ^ 0x7A11u) > earlyThinKeep) return;
+    }
+
+    // Reject jittered cells that spilled outside the terrain before sampling.
+    float2 terrainUV = (worldXZ - _TerrainOrigin.xz) / _TerrainSize.xz;
+    if (any(terrainUV < 0.0) || any(terrainUV > 1.0)) return;
 
     // Mask channels:
     //   R = placement / density gate (0..1). Drives whether grass exists in
@@ -265,6 +329,11 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     // painted B.
     float densityProb = placement * gt.densityMultiplier;
     if (HashToFloat(hash ^ 0xA53Bu) > densityProb) return;
+
+    // Terrain height is needed only after mask and density rejection. Painted
+    // masks are frequently sparse, so this avoids a large number of heightmap
+    // fetches in empty cells.
+    float worldY = SampleTerrainHeight(worldXZ);
 
     // Clumping noise: drives height, color, and direction in a coherent way.
     float clumpScale = _CullParams.w;
@@ -318,14 +387,19 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
 
     // Surface normal deferred past all culls — only reached by blades that
     // passed placement, density, frustum, and distance checks.
-    float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
-    float3 bladeUp = normalize(lerp(float3(0.0, 1.0, 0.0), terrainN, saturate(gt.slopeFollow)));
+    float slopeFollow = saturate(gt.slopeFollow);
+    float3 bladeUp = float3(0.0, 1.0, 0.0);
+    if (slopeFollow > 1e-4)
+    {
+        float3 terrainN = SampleTerrainNormal(worldXZ, 0.5);
+        bladeUp = normalize(lerp(bladeUp, terrainN, slopeFollow));
+    }
 
     float dist = sqrt(distSq);
     float highCutoff = _CullParams.y;
     float blendBand  = max(0.001, _CullParams.z);
     float halfBand   = blendBand * 0.5;
-    float maxDist    = sqrt(maxDistSq);
+    float maxDist    = maxDrawDistance;
 
     // Distance thinning. Beyond _ThinningParams.x the keep-probability ramps
     // down toward the horizon, so low-LOD grass gets sparser with distance.
@@ -348,9 +422,8 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     bool inHigh = dist <= highCutoff + halfBand;
     bool inLow  = dist >= highCutoff - halfBand;
     float highBlend = saturate((highCutoff + halfBand - dist) / blendBand);
-    float lowFadeIn  = saturate((dist - (highCutoff - halfBand)) / blendBand);
     float lowFadeOut = saturate((maxDist - dist) / blendBand);
-    float lowBlend   = lowFadeIn * lowFadeOut;
+    uint cellInteractionPacked = PackGrassInteraction(worldPos);
 
     // ---- Per-cell blade count ----------------------------------------------
     // Baseline is 1-2 blades per cell (50/50) — single isolated blades read
@@ -435,7 +508,6 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
         b.tiltAngle = btilt;
         b.height    = bh;
         b.width     = bw;
-        b.hash      = bhash;
         b.facing    = float3(bfx, 0.0, bfz);
         b.typeIndex = isFolded ? 1u : 0u;
         b.normalUp  = bladeUp;
@@ -452,12 +524,26 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
         // Only gates low-LOD appends, so the high LOD stays untouched.
         bool keepLow = (HashToFloat(bhash ^ 0x7A11u) <= thinKeep);
 
+        // Stable stochastic LOD selection keeps the transition soft without
+        // appending the same blade to both buffers throughout the blend band.
+        // This removes the transition's worst-case 2x vertex/fragment cost.
+        float lodRoll = HashToFloat(bhash ^ 0x10D5u);
+        bool useHigh = !forceLow && inHigh && (!inLow || lodRoll < highBlend);
+        bool useLow = !useHigh && (forceLow || inLow);
+        bool appendHigh = useHigh;
+        bool appendLow = useLow && keepLow;
+        if (!appendHigh && !appendLow) continue;
+
+        // Tuft offsets are only a few centimetres, so all blades in the cell
+        // reuse one packed interaction displacement.
+        b.interactionPacked = cellInteractionPacked;
+
         // Wind sampled once per blade. needHigh/needLow follow the append
         // routing below so low-only blades pay for a single octave.
         float windHigh, windLow;
         ComputeWindBases(bpos.xz, bhash,
-                         /*needHigh*/ !forceLow && inHigh,
-                         /*needLow*/  keepLow && (forceLow || inLow),
+                         /*needHigh*/ appendHigh,
+                         /*needLow*/  appendLow,
                          windHigh, windLow);
 
         // Short blades barely catch the wind. windHeightFalloff (0..1) ramps in
@@ -472,21 +558,18 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
         windHigh *= windAtten;
         windLow  *= windAtten;
 
-        if (forceLow)
+        if (appendHigh)
         {
-            // Still respect max-distance fade so the simplified blade
-            // disappears at the visibility horizon like everything else.
-            if (keepLow)
-            {
-                b.lodBlend = lowFadeOut;
-                b.windBase = windLow;
-                _BladesLow.Append(b);
-            }
+            b.lodBlend = 1.0;
+            b.windBase = windHigh;
+            _BladesHigh.Append(b);
         }
-        else
+        else if (appendLow)
         {
-            if (inHigh)            { b.lodBlend = highBlend; b.windBase = windHigh; _BladesHigh.Append(b); }
-            if (inLow && keepLow)  { b.lodBlend = lowBlend;  b.windBase = windLow;  _BladesLow.Append(b); }
+            // Keep the horizon height fade while LOD transitions use dithering.
+            b.lodBlend = lowFadeOut;
+            b.windBase = windLow;
+            _BladesLow.Append(b);
         }
     }
 }

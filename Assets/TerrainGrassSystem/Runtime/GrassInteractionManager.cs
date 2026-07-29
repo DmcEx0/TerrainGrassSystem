@@ -13,7 +13,7 @@ namespace TerrainGrassSystem
     public class GrassInteractionManager : MonoBehaviour
     {
         [SerializeField] private float _interactionStr;
-        const int MaxSources = 8;
+        internal const int MaxSources = 8;
 
         static readonly List<GrassInteractionSource> s_Sources = new();
         static readonly int PropSources = Shader.PropertyToID("_GrassInteractionSources");
@@ -32,16 +32,46 @@ namespace TerrainGrassSystem
         public static void Unregister(GrassInteractionSource src) =>
             s_Sources.Remove(src);
 
+        internal static int FillDepthOcclusionExclusions(Vector4[] destination)
+        {
+            if (destination == null) return 0;
+
+            int count = 0;
+            for (int i = 0; i < s_Sources.Count && count < destination.Length; ++i)
+            {
+                var src = s_Sources[i];
+                if (src == null || !src.isActiveAndEnabled || !src.ExcludeFromDepthOcclusion) continue;
+
+                Vector4 sphere = src.GetDepthOcclusionSphere();
+                if (sphere.w <= 0f) continue;
+                destination[count++] = sphere;
+            }
+
+            return count;
+        }
+
+        internal static int FillInteractionSources(Vector4[] destination)
+        {
+            if (destination == null) return 0;
+
+            int count = 0;
+            for (int i = 0; i < s_Sources.Count && count < destination.Length; ++i)
+            {
+                var src = s_Sources[i];
+                if (src == null || !src.isActiveAndEnabled || src.Radius <= 0f) continue;
+
+                Vector3 p = src.transform.position;
+                Vector3 scale = src.transform.lossyScale;
+                float maxScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.y), Mathf.Abs(scale.z));
+                destination[count++] = new Vector4(p.x, p.y, p.z, src.Radius * maxScale);
+            }
+
+            return count;
+        }
+
         void LateUpdate()
         {
-            int count = 0;
-            foreach (var src in s_Sources)
-            {
-                if (count >= MaxSources) break;
-                if (src == null || !src.isActiveAndEnabled) continue;
-                Vector3 p = src.transform.position;
-                _buffer[count++] = new Vector4(p.x, p.y, p.z, src.Radius);
-            }
+            int count = FillInteractionSources(_buffer);
             
             Shader.SetGlobalVectorArray(PropSources, _buffer);
             Shader.SetGlobalFloat(PropInteractionStr, _interactionStr);

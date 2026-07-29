@@ -43,6 +43,8 @@ namespace TerrainGrassSystem
         GrassWind      _wind;
         readonly List<GrassRenderer.Tile> _visibleTiles = new(256);
         readonly Plane[] _frustumPlaneBuffer = new Plane[6];
+        readonly Vector4[] _depthOcclusionExclusions = new Vector4[GrassInteractionManager.MaxSources];
+        readonly Vector4[] _interactionSources = new Vector4[GrassInteractionManager.MaxSources];
         bool _hasRenderPassResult;
 
         static readonly List<GrassTerrain> s_ActiveTerrains = new(8);
@@ -106,6 +108,8 @@ namespace TerrainGrassSystem
         ComputeShader        _validateCompute;
         Material             _validateHighMat;
         Material             _validateLowMat;
+        int                  _validateMaxHighLodBlades;
+        int                  _validateMaxLowLodBlades;
 
         void OnEnable()
         {
@@ -147,7 +151,9 @@ namespace TerrainGrassSystem
             bool changed = !ReferenceEquals(_validateSettings, Settings)
                         || !ReferenceEquals(_validateCompute,  ComputeShader)
                         || !ReferenceEquals(_validateHighMat,  HighLodMaterial)
-                        || !ReferenceEquals(_validateLowMat,   LowLodMaterial);
+                        || !ReferenceEquals(_validateLowMat,   LowLodMaterial)
+                        || _validateMaxHighLodBlades != (Settings != null ? Settings.MaxHighLodBlades : 0)
+                        || _validateMaxLowLodBlades != (Settings != null ? Settings.MaxLowLodBlades : 0);
 
             CaptureValidateSnapshot();
             return changed;
@@ -172,6 +178,8 @@ namespace TerrainGrassSystem
             _validateCompute  = ComputeShader;
             _validateHighMat  = HighLodMaterial;
             _validateLowMat   = LowLodMaterial;
+            _validateMaxHighLodBlades = Settings != null ? Settings.MaxHighLodBlades : 0;
+            _validateMaxLowLodBlades  = Settings != null ? Settings.MaxLowLodBlades : 0;
         }
 
         void LateUpdate()
@@ -217,6 +225,9 @@ namespace TerrainGrassSystem
                 WindParams       = hasWind ? _wind.ActiveParams : Vector4.zero,
                 WindDirection    = hasWind ? _wind.ActiveDirection : new Vector4(1f, 0f, 0f, 0f),
                 FrustumPlanes    = _frustumPlaneBuffer,
+                InteractionSources = _interactionSources,
+                InteractionSourceCount =
+                    GrassInteractionManager.FillInteractionSources(_interactionSources),
             });
         }
 
@@ -267,6 +278,12 @@ namespace TerrainGrassSystem
                 DepthOcclusionViewProjectionMatrix = depthProjectionMatrix * depthViewMatrix,
                 DepthOcclusionTexelSize = depthTexelSize,
                 ZBufferParams = CalculateZBufferParams(camera),
+                InteractionSources = _interactionSources,
+                InteractionSourceCount =
+                    GrassInteractionManager.FillInteractionSources(_interactionSources),
+                DepthOcclusionExclusions = _depthOcclusionExclusions,
+                DepthOcclusionExclusionCount =
+                    GrassInteractionManager.FillDepthOcclusionExclusions(_depthOcclusionExclusions),
             }, occlusionDepthTexture);
 
             _hasRenderPassResult = true;

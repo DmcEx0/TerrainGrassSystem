@@ -8,6 +8,16 @@
 float4 _GrassInteractionSources[GRASS_MAX_INTERACTION_SOURCES];
 int    _GrassInteractionCount;
 
+// Runtime blade rendering uses the interaction displacement precomputed once
+// per blade by GrassCompute.compute. Two signed half floats store world XZ.
+float3 ApplyGrassInteractionPacked(uint packedOffset, float v, float maxPush)
+{
+    float2 push = float2(
+        f16tof32(packedOffset & 0xFFFFu),
+        f16tof32(packedOffset >> 16));
+    return float3(push.x, 0.0, push.y) * (maxPush * v * v);
+}
+
 // Returns a horizontal world-space push offset.
 // The result is scaled by v² so the root stays fixed and the tip bends the most.
 // maxPush — maximum displacement (metres) when a blade is right at the source centre.
@@ -20,12 +30,13 @@ float3 ApplyGrassInteraction(float3 bladeRoot, float v, float maxPush)
         float4 src   = _GrassInteractionSources[i];
         float3 delta = bladeRoot - src.xyz;
         delta.y      = 0.0;             // project to the XZ plane — horizontal push only
-        float  dist  = length(delta);
         float  rad   = src.w;
-        if (dist < rad && dist > 0.001)
+        float  distSq = dot(delta, delta);
+        if (distSq < rad * rad && distSq > 1e-6)
         {
+            float dist = sqrt(distSq);
             float t  = 1.0 - saturate(dist / rad);
-            offset  += normalize(delta) * (t * t) * maxPush;
+            offset  += delta * rsqrt(distSq) * (t * t) * maxPush;
         }
     }
     return offset * (v * v);            // v² : root anchored, tip displaced most

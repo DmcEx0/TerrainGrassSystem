@@ -19,7 +19,7 @@ namespace TerrainGrassSystem
 
         public float   Bend;
         public float   LodBlend;
-        public uint    Hash;
+        public uint    InteractionPacked; // two half floats: normalized interaction push in world XZ
         public uint    TypeIndex;
 
         public Vector3 NormalUp;   // per-blade up axis (blended terrain normal vs world up by GrassType.SlopeFollow)

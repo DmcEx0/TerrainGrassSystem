@@ -16,7 +16,7 @@ struct GrassBlade
 
     float  bend;       // signed Bezier control-point offset along facing
     float  lodBlend;   // 1 = freshly born at this LOD, 0 = about to fade out
-    uint   hash;       // per-blade random hash
+    uint   interactionPacked; // two half floats: normalized interaction push in world XZ
     uint   typeIndex;  // flag bits. Bit 0 = folded (short blade implemented as
                        // one long blade folded at v=0.5 so a single mesh
                        // instance renders as two short blades sharing a root).
