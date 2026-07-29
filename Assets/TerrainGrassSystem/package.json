@@ -1,6 +1,6 @@
 {
   "name": "com.terraingrasssystem.grass",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "displayName": "Terrain Grass System",
   "description": "GPU-procedural grass for Unity Terrain (URP RenderGraph). Compute-generated Bezier blades, CPU tile culling, GPU per-blade culling and depth occlusion, two stochastic LODs, wind, interaction sources, and a painted density mask. Includes editor painting and noise/mask tools.",
   "unity": "6000.3",
