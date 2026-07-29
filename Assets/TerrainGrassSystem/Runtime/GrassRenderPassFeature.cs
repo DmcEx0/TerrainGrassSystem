@@ -26,15 +26,18 @@ namespace TerrainGrassSystem
         {
             var camera = renderingData.cameraData.camera;
             if (!IsSupportedCamera(camera)) return;
-            if (!GrassTerrain.HasAnyRenderPassTerrain) return;
+            bool gameCamera = IsGameCamera(camera);
+            if (gameCamera
+                    ? !GrassTerrain.HasAnyRuntimeTerrainForCamera(camera)
+                    : !GrassTerrain.HasAnyRuntimeTerrain)
+                return;
 
             _pass ??= new GrassRenderPass();
             _pass.renderPassEvent = _renderPassEvent;
             _pass.ShowGameCameraResultInSceneView = _showGameCameraResultInSceneView;
-            _pass.ConfigureInput(IsGameCamera(camera) && GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain
+            _pass.ConfigureInput(gameCamera && GrassTerrain.HasAnyDepthOcclusionRuntimeTerrainForCamera(camera)
                 ? ScriptableRenderPassInput.Depth
                 : ScriptableRenderPassInput.None);
-            GrassTerrain.MarkRenderPassQueued();
             renderer.EnqueuePass(_pass);
         }
 
@@ -78,6 +81,7 @@ namespace TerrainGrassSystem
             sealed class DrawPassData
             {
                 public int MsaaSamples;
+                public Camera Camera;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -93,7 +97,7 @@ namespace TerrainGrassSystem
                 bool sceneViewDrawsGameResult = IsSceneCamera(cameraData.camera) && ShowGameCameraResultInSceneView;
                 bool enableDepthOcclusion = !sceneViewDrawsGameResult
                     && IsGameCamera(cameraData.camera)
-                    && GrassTerrain.HasAnyDepthOcclusionRenderPassTerrain;
+                    && GrassTerrain.HasAnyDepthOcclusionRuntimeTerrainForCamera(cameraData.camera);
                 var occlusionDepthTexture = enableDepthOcclusion
                     ? resourceData.cameraDepthTexture
                     : TextureHandle.nullHandle;
@@ -139,6 +143,7 @@ namespace TerrainGrassSystem
                     "Terrain Grass Draw Pass", out var drawData);
 
                 drawData.MsaaSamples = cameraData.cameraTargetDescriptor.msaaSamples;
+                drawData.Camera = cameraData.camera;
 
                 drawBuilder.SetRenderAttachment(colorTexture, 0, AccessFlags.Write);
                 drawBuilder.SetRenderAttachmentDepth(depthTexture, AccessFlags.ReadWrite);
@@ -148,10 +153,11 @@ namespace TerrainGrassSystem
                 drawBuilder.SetRenderFunc((DrawPassData data, RasterGraphContext context) =>
                 {
                     SetupOpaqueDrawGlobals(context.cmd, data.MsaaSamples);
+                    GrassInteractionManager.PushShaderGlobals(context.cmd);
 
                     var terrains = GrassTerrain.ActiveTerrains;
                     for (int i = 0; i < terrains.Count; ++i)
-                        terrains[i]?.DrawLastRenderPassResult(context.cmd);
+                        terrains[i]?.DrawLastRenderPassResult(context.cmd, data.Camera);
                 });
             }
 

@@ -2,9 +2,8 @@ using UnityEngine;
 
 namespace TerrainGrassSystem
 {
-    // Art-tweakable parameters for a single grass species. Several of these can
-    // be assigned to a GrassTerrain — the grass mask texture selects between
-    // them per pixel via its GBA channels.
+    // Art-tweakable parameters for the grass species used by one GrassTerrain.
+    // Local variation is driven by the mask channels and clump noise.
     [CreateAssetMenu(menuName = "TerrainGrassSystem/Grass/Grass Type", fileName = "GrassType")]
     public class GrassType : ScriptableObject
     {

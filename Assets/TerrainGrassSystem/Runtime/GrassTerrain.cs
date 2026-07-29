@@ -22,7 +22,7 @@ namespace TerrainGrassSystem
         public Material LowLodMaterial;
 
         [Header("Maps")]
-        [Tooltip("RGBA terrain mask painted via the Paint Grass tool.\nR = placement / density (the only required channel).\nG = height multiplier (0..1); G<0.5 enables folded short-blade rendering.\nB = clamp / tufting (opt-in — only painted areas get tufts).\nA = reserved.")]
+        [Tooltip("RGBA terrain mask painted via the Paint Grass tool.\nR = placement / density (the only required channel).\nG = height multiplier (0..1); sufficiently short final blades can use folding when GrassType.FoldHeight is enabled.\nB = clamp / tufting (opt-in — only painted areas get tufts).\nA = reserved.")]
         public Texture2D GrassMask;
         [Tooltip("Seamless Perlin noise texture used to drive clumping (height/color/direction).")]
         public Texture2D ClumpNoise;
@@ -48,50 +48,55 @@ namespace TerrainGrassSystem
         bool _hasRenderPassResult;
 
         static readonly List<GrassTerrain> s_ActiveTerrains = new(8);
-        static int s_LastRenderPassFrame = -1000;
 
         internal static IReadOnlyList<GrassTerrain> ActiveTerrains => s_ActiveTerrains;
-        internal static bool HasAnyRenderPassTerrain
+        internal static bool HasAnyRuntimeTerrain
         {
             get
             {
                 for (int i = 0; i < s_ActiveTerrains.Count; ++i)
                 {
                     var terrain = s_ActiveTerrains[i];
-                    if (terrain != null && terrain.ShouldRenderFromRenderPass) return true;
+                    if (terrain != null && terrain.ShouldRenderAtRuntime) return true;
                 }
                 return false;
             }
         }
 
-        internal static bool HasAnyDepthOcclusionRenderPassTerrain
+        internal static bool HasAnyRuntimeTerrainForCamera(Camera camera)
         {
-            get
+            for (int i = 0; i < s_ActiveTerrains.Count; ++i)
             {
-                for (int i = 0; i < s_ActiveTerrains.Count; ++i)
-                {
-                    var terrain = s_ActiveTerrains[i];
-                    if (terrain != null
-                        && terrain.ShouldRenderFromRenderPass
-                        && terrain.Settings.EnableDepthOcclusion)
-                        return true;
-                }
-                return false;
+                var terrain = s_ActiveTerrains[i];
+                if (terrain != null && terrain.ShouldRenderForCamera(camera)) return true;
             }
+            return false;
         }
 
-        internal bool ShouldRenderFromRenderPass =>
-            Application.isPlaying
-            && Settings != null
-            && Settings.RenderPath == GrassRenderPath.UniversalRenderPass;
-
-        internal static void MarkRenderPassQueued()
+        internal static bool HasAnyDepthOcclusionRuntimeTerrainForCamera(Camera camera)
         {
-            s_LastRenderPassFrame = Time.frameCount;
+            for (int i = 0; i < s_ActiveTerrains.Count; ++i)
+            {
+                var terrain = s_ActiveTerrains[i];
+                if (terrain != null
+                    && terrain.ShouldRenderForCamera(camera)
+                    && terrain.Settings.EnableDepthOcclusion)
+                    return true;
+            }
+            return false;
         }
 
-        static bool RenderPassWasQueuedRecently =>
-            Time.frameCount - s_LastRenderPassFrame <= 1;
+        internal bool ShouldRenderAtRuntime =>
+            Application.isPlaying && Settings != null;
+
+        internal bool ShouldRenderForCamera(Camera camera)
+        {
+            if (!ShouldRenderAtRuntime || camera == null) return false;
+            if (camera.cameraType == CameraType.SceneView) return true;
+
+            Camera driver = OverrideCamera != null ? OverrideCamera : Camera.main;
+            return camera == driver;
+        }
 
         // Cached terrain-derived state — refreshed when bounds change.
         Vector3 _terrainOrigin;
@@ -182,10 +187,15 @@ namespace TerrainGrassSystem
             _validateMaxLowLodBlades  = Settings != null ? Settings.MaxLowLodBlades : 0;
         }
 
+#if UNITY_EDITOR
+        // Preserve the original ExecuteAlways Scene View preview path. Unity
+        // invokes this in Edit Mode at the same point as before, which is
+        // required for Graphics.RenderMeshIndirect to appear reliably in the
+        // Scene View. Runtime rendering still belongs exclusively to RenderGraph.
         void LateUpdate()
         {
+            if (Application.isPlaying) return;
             if (!ValidateConfig()) return;
-            if (ShouldRenderFromRenderPass && RenderPassWasQueuedRecently) return;
             EnsureRenderer();
             RebuildTileGridIfDirty();
 
@@ -230,6 +240,7 @@ namespace TerrainGrassSystem
                     GrassInteractionManager.FillInteractionSources(_interactionSources),
             });
         }
+#endif
 
         internal void GenerateFromRenderPass(
             UnsafeCommandBuffer cmd,
@@ -239,7 +250,7 @@ namespace TerrainGrassSystem
             Matrix4x4 depthProjectionMatrix,
             Vector4 depthTexelSize)
         {
-            if (!ShouldRenderFromRenderPass) return;
+            if (!ShouldRenderForCamera(camera)) return;
             if (!ValidateConfig()) return;
             if (camera == null) return;
 
@@ -289,9 +300,9 @@ namespace TerrainGrassSystem
             _hasRenderPassResult = true;
         }
 
-        internal void DrawLastRenderPassResult(RasterCommandBuffer cmd)
+        internal void DrawLastRenderPassResult(RasterCommandBuffer cmd, Camera camera)
         {
-            if (!ShouldRenderFromRenderPass) return;
+            if (!ShouldRenderForCamera(camera)) return;
             if (!ValidateConfig()) return;
             if (!_hasRenderPassResult) return;
 

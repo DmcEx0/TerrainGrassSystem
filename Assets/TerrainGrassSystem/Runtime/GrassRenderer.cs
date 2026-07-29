@@ -7,9 +7,9 @@ namespace TerrainGrassSystem
 {
     // Core renderer. One of these is owned by each GrassTerrain.
     // - Allocates GPU buffers
-    // - Each frame: resets counters, dispatches CSGenerate for visible tiles,
-    //   populates indirect args, and submits two RenderMeshIndirect calls
-    //   (one per LOD).
+    // - At runtime, records generation and two indirect LOD draws into URP
+    //   RenderGraph. The immediate submission path exists only for Scene View
+    //   preview in the editor.
     //
     // The renderer does not read back from the GPU; everything is GPU-resident.
     public sealed class GrassRenderer : System.IDisposable
@@ -185,8 +185,8 @@ namespace TerrainGrassSystem
             // does not recompute the culling matrix a second time this frame.
             public Plane[] FrustumPlanes;
 
-            // Optional camera-depth occlusion. Only the render-pass path can
-            // provide same-frame opaque depth; the legacy LateUpdate path keeps
+            // Optional camera-depth occlusion. Runtime RenderGraph generation
+            // receives the current camera's opaque depth; editor preview keeps
             // this disabled.
             public bool DepthOcclusionEnabled;
             public Matrix4x4 DepthOcclusionViewMatrix;
@@ -197,6 +197,7 @@ namespace TerrainGrassSystem
             public int DepthOcclusionExclusionCount;
         }
 
+#if UNITY_EDITOR
         public void Render(in FrameInput input)
         {
             if (input.Camera == null) return;
@@ -248,6 +249,7 @@ namespace TerrainGrassSystem
             SubmitDraw(_highMesh, _highMaterial, _bladesHigh, _argsHigh, GrassBladeMesh.HighLodSegments, _mpbHigh);
             SubmitDraw(_lowMesh,  _lowMaterial,  _bladesLow,  _argsLow,  GrassBladeMesh.LowLodSegments,  _mpbLow);
         }
+#endif
 
         internal void Generate(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
         {
@@ -325,6 +327,7 @@ namespace TerrainGrassSystem
             return sign / Mathf.Tan(paddedHalfAngle);
         }
 
+#if UNITY_EDITOR
         void BindCommonComputeInputs(in FrameInput input)
         {
             var settings = input.Settings;
@@ -401,6 +404,7 @@ namespace TerrainGrassSystem
             _compute.SetInt(s_OcclusionExclusionCountId, 0);
             _compute.SetVector(s_ZBufferParamsId, input.ZBufferParams);
         }
+#endif
 
         void BindCommonComputeInputs(UnsafeCommandBuffer cmd, in FrameInput input, TextureHandle occlusionDepthTexture)
         {
@@ -481,12 +485,14 @@ namespace TerrainGrassSystem
             cmd.SetComputeVectorParam(_compute, s_ZBufferParamsId, input.ZBufferParams);
         }
 
+#if UNITY_EDITOR
         int UploadVisibleTiles(IReadOnlyList<Tile> tiles)
         {
             int count = StageVisibleTiles(tiles);
             _visibleTiles.SetData(_visibleTileStaging);
             return count;
         }
+#endif
 
         int StageVisibleTiles(IReadOnlyList<Tile> tiles)
         {
@@ -514,6 +520,7 @@ namespace TerrainGrassSystem
                 GraphicsBuffer.Target.Structured, capacity, sizeof(float) * 4);
         }
 
+#if UNITY_EDITOR
         void SubmitDraw(Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
         {
             if (mesh == null || material == null) return;
@@ -532,6 +539,7 @@ namespace TerrainGrassSystem
 
             Graphics.RenderMeshIndirect(rp, mesh, args, 1);
         }
+#endif
 
         void SubmitDraw(RasterCommandBuffer cmd, Mesh mesh, Material material, GraphicsBuffer blades, GraphicsBuffer args, int lodSegments, MaterialPropertyBlock mpb)
         {
@@ -582,11 +590,13 @@ namespace TerrainGrassSystem
 
         // Zero the args so a stale instanceCount cannot leak into a frame with no tiles.
         readonly uint[] _zeroArgs = new uint[5];
+#if UNITY_EDITOR
         void ResetArgsToZero()
         {
             _argsHigh.SetData(_zeroArgs);
             _argsLow.SetData(_zeroArgs);
         }
+#endif
 
         void ResetArgsToZero(UnsafeCommandBuffer cmd)
         {

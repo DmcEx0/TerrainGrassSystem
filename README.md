@@ -11,9 +11,12 @@ Implements the approach from the talk *"Procedural Grass in Ghost of Tsushima"*:
 - Blades are generated on the GPU in a compute shader along a Bézier curve.
 - The world is split into tiles; visible tiles are culled on the CPU (frustum + distance).
 - Each blade is additionally culled on the GPU (frustum + max-distance).
-- Two LOD meshes with smooth cross-fade via height compression at the boundaries.
+- Runtime generation and drawing are recorded in a custom **URP RenderGraph** pass after opaque geometry.
+- Optional camera-depth occlusion rejects grass hidden behind opaque objects before drawing.
+- Two LOD meshes with stable stochastic switching — a blade is never drawn in both LODs at once.
 - Clump-noise fields drive grass height, color and orientation.
 - Wind — a Perlin texture + per-blade phase.
+- Up to eight interaction sources can bend grass and protect the player from depth occlusion.
 - Curved "fake" normals and camera-facing rotation without extra geometry.
 - Artists tune parameters through a `GrassType` ScriptableObject.
 
@@ -44,7 +47,8 @@ or manually in the project's `Packages/manifest.json`:
 | | |
 |---|---|
 | **Unity** | 6.x with URP 17.x (tested on `6000.3.8f1`, URP `17.3.0`) |
-| **GPU** | Shader Model 5.0+ (compute shaders, `RenderMeshIndirect`, `StructuredBuffer` in the vertex stage). All current GPUs qualify, including mobile with Vulkan/Metal. |
+| **Render pipeline** | URP with RenderGraph enabled. Compatibility Mode (Render Graph disabled) is not supported at runtime. |
+| **GPU** | Shader Model 5.0+ (compute shaders, indirect indexed draws, `StructuredBuffer` in the vertex stage). |
 
 ---
 
@@ -59,14 +63,15 @@ TerrainGrassSystem/
 │   ├── GrassBladeMesh.cs               unit-mesh generation for the two LODs
 │   ├── GrassWind.cs                    wind component
 │   ├── GrassInteractionSource.cs       marks a transform as a grass-pusher
-│   ├── GrassInteractionManager.cs      collects sources, pushes data to GPU
-│   ├── GrassRenderer.cs                core: buffers, indirect draw
+│   ├── GrassInteractionManager.cs      source registry + ShaderGraph globals
+│   ├── GrassRenderPassFeature.cs       URP RenderGraph generate/draw passes
+│   ├── GrassRenderer.cs                GPU buffers, compute, indirect draw
 │   └── GrassTerrain.cs                 wrapper component for Unity Terrain
 │
 ├── Shaders/
 │   ├── GrassCommon.hlsl                structs and helpers (shared)
 │   ├── GrassWind.hlsl                  wind sampling + GrassWind_Apply graph node
-│   ├── GrassInteraction.hlsl           collider push + GrassInteraction_Apply graph node
+│   ├── GrassInteraction.hlsl           source push + GrassInteraction_Apply graph node
 │   ├── GrassCompute.compute            CSGenerate + CSBuildArgs
 │   ├── GrassBlade.shader               URP HLSL shader (default working one)
 │   └── GrassBladeGraph.hlsl            Custom Function nodes for ShaderGraph
@@ -106,7 +111,13 @@ In the Project window: **RMB → Create → TerrainGrassSystem → Grass → …
 - Assign the shader **`TerrainGrassSystem/Grass/Blade`**.
 - *(For the ShaderGraph variant — see the [ShaderGraph](#-shadergraph-variant) section.)*
 
-### Step 4. Attach the components to the terrain
+### Step 4. Add the URP Renderer Feature
+
+Open every **Universal Renderer Data** asset used by a camera that should render grass. Click **Add Renderer Feature** and add **Grass Render Pass Feature**. Keep its event at **After Rendering Opaques**.
+
+Also make sure URP **Compatibility Mode (Render Graph disabled)** is off. There is intentionally no runtime `LateUpdate` fallback: without this Renderer Feature, grass does not render in Play Mode or a player build.
+
+### Step 5. Attach the components to the terrain
 
 On the GameObject with the **`Terrain`** component, add **`TerrainGrassSystem → Grass → Grass Terrain`** and fill in the fields (see the [reference below](#grassterrain)):
 
@@ -122,17 +133,17 @@ On the GameObject with the **`Terrain`** component, add **`TerrainGrassSystem �
 
 ![Grass Terrain inspector](img/3.png)
 
-### Step 5. Add wind *(optional)*
+### Step 6. Add wind *(optional)*
 
 On any GameObject in the scene add the **`TerrainGrassSystem → Grass → Grass Wind`** component and assign `Wind Noise` (the same Perlin noise or a separate one — the key is that it be seamless). Without this component the grass simply does not sway.
 
-### Step 6. Paint the grass
+### Step 7. Paint the grass
 
 The mask is empty by default, so there is no grass yet. In the terrain inspector, `GrassTerrain` adds a **"TerrainGrassSystem/Paint Grass"** brush to the terrain brush row. Select it and paint (see the [Painting](#-painting-the-mask) section).
 
-### Step 7. Play
+### Step 8. Play
 
-Hit **Play**. Grass is also visible in the Scene View without entering Play mode — the components are marked `[ExecuteAlways]`.
+Hit **Play**. At runtime the grass is rendered only through URP RenderGraph. Without entering Play mode it remains visible through the original `[ExecuteAlways]` / `LateUpdate` Scene View preview; that path is editor-only and is not included in player builds.
 
 ---
 
@@ -140,7 +151,7 @@ Hit **Play**. Grass is also visible in the Scene View without entering Play mode
 
 ### GrassTerrain
 
-The main component. Attached to the object with `Terrain`, it links all the assets and dispatches generation every frame.
+The main component. Attached to the object with `Terrain`, it links all assets and supplies each camera frame to the RenderGraph pass.
 
 | Field | Type | Description |
 |---|---|---|
@@ -178,42 +189,48 @@ Grass appearance parameters. One asset for the whole terrain; variety comes from
 
 | Field | Default | Description |
 |---|---|---|
-| **Base Height** | `0.6` | Base blade height, m. |
-| **Height Variance** | `0.2` | Height variation by **clump noise** — neighbors change together, forming visible patches of tall/short grass. |
-| **Height Randomness** | `0.1` | Random **per-blade** height spread, m. Independent of the noise: each blade rolls its own. |
+| **Base Height** | `0.8` | Base blade height, m. |
+| **Height Variance** | `0.4` | Height variation by **clump noise** — neighbors change together, forming visible patches of tall/short grass. |
+| **Height Randomness** | `0.2` | Random **per-blade** height spread, m. Independent of the noise: each blade rolls its own. |
 
 #### Width
 
 | Field | Default | Description |
 |---|---|---|
 | **Base Width** | `0.04` | Base width at the root, m. |
-| **Width Variance** | `0.01` | Random width spread. |
-| **Width Height Coupling** | `0` (0..1) | How much the width scales with blade height. 0 = width is independent (legacy); 1 = a short blade becomes proportionally thinner. |
+| **Width Variance** | `0.02` | Random width spread. |
+| **Width Height Coupling** | `0.581` (0..1) | How much the width scales with blade height. 0 = width is independent; 1 = a short blade becomes proportionally thinner. |
 
 #### Shape
 
 | Field | Default | Description |
 |---|---|---|
-| **Base Tilt** | `0.35` | Forward tilt of the tip, radians. |
-| **Tilt Variance** | `0.15` | Random tilt spread. |
-| **Slope Follow** | `0.5` (0..1) | How much the blade follows the terrain slope. 0 = always straight up; 1 = perpendicular to the surface. |
-| **Facing Variance** | `0.5` | Random rotation around the vertical, radians. Added on top of the noise-driven direction. 0 → neighbors face the same way (visible "stripes" and bald spots when rotating the camera); ~0.5 (≈28°) is good local variation; π = fully random. |
-| **Facing Randomness** | `0` (0..1) | Blends direction between clump noise and a fully random per-blade angle. 0 = follow the noise; 1 = ignore the noise. |
-| **Bend** | `0.15` | Bend of the middle Bézier control point (curvature). Positive = arches forward. |
+| **Base Tilt** | `-0.4` | Forward tilt of the tip, radians. |
+| **Tilt Variance** | `0.1` | Random tilt spread. |
+| **Slope Follow** | `0` (0..1) | How much the blade follows the terrain slope. 0 = always straight up; 1 = perpendicular to the surface. |
+| **Facing Variance** | `3` | Bounded random rotation around the vertical, radians, added to the selected base direction. |
+| **Facing Randomness** | `0.05` (0..1) | Blends direction between clump noise and a fully random per-blade angle. 0 = follow the noise; 1 = ignore the noise. |
+| **Bend** | `0` | Bend of the middle Bézier control point (curvature). Positive = arches forward. |
 
 #### Density
 
 | Field | Default | Description |
 |---|---|---|
 | **Density Multiplier** | `1.0` (0..4) | Global density multiplier (multiplied by `mask.r`). |
-| **Max Blades Per Cell** | `8` (1..16) | Maximum blades in a cell when channel B (Clamp) is fully painted. At B=0 — the base 1–2; at B=1 the count grows toward this maximum. ⚠️ Buffer load grows linearly — raise `MaxHighLodBlades` / `MaxLowLodBlades` in step. |
+| **Max Blades Per Cell** | `16` (1..16) | Maximum blades in a cell when channel B (Clamp) is fully painted. At B=0 — the base 1–2; at B=1 the count grows toward this maximum. ⚠️ Buffer load grows linearly — raise `MaxHighLodBlades` / `MaxLowLodBlades` in step. |
 
 #### Short-blade optimizations
 
 | Field | Default | Description |
 |---|---|---|
-| **Fold Height** | `0.3` | Blades shorter than this (m) render as **a single mesh folded into a V** — one instance = two short sub-blades. `0` = disabled. Typically 30–50% of Base Height. |
-| **Small Blade Height** | `0.2` | Unfolded blades shorter than this (m) move to the low-LOD mesh (1 triangle instead of ~7). Folded ones are untouched. `0` = disabled. |
+| **Fold Height** | `0` | Blades shorter than this (m) render as **a single mesh folded into a V** — one instance = two short sub-blades. `0` = disabled. Typically 30–50% of Base Height when enabled. |
+| **Small Blade Height** | `0.1` | Unfolded blades shorter than this (m) move to the low-LOD mesh (1 triangle instead of ~7). Folded ones are untouched. `0` = disabled. |
+
+#### Wind
+
+| Field | Default | Description |
+|---|---|---|
+| **Wind Height Falloff** | `0.75` (0..1) | Attenuates wind for short blades. At 1, sway scales roughly with squared height ratio; at 0, all heights receive the same base sway. |
 
 #### Color
 
@@ -232,35 +249,40 @@ Performance and layout settings. Can be shared between several terrains.
 
 | Field | Default | Description |
 |---|---|---|
-| **Tile Size** | `16` (≥2) | Tile size in meters. Smaller = more precise culling, but more dispatches per frame. |
-| **Blades Per Tile Axis** | `96` (4..256) | Blades per axis inside a tile. Total per tile = N×N. The grid is jittered so it does not look like a lattice. |
+| **Tile Size** | `10` (≥2) | Tile size in meters. Smaller = more precise culling, but more CPU tile checks and descriptors. |
+| **Blades Per Tile Axis** | `135` (4..256) | Candidate cells per axis inside a tile. Total per tile = N×N before mask, density and GPU culling. |
 
 #### Culling
 
 | Field | Default | Description |
 |---|---|---|
-| **Tile Cull Distance** | `80` (≥2) | Tiles beyond this distance are not generated at all. |
-| **Max Blade Distance** | `60` (≥2) | Per-blade maximum: blades farther away are discarded on the GPU. |
+| **Tile Cull Distance** | `130` (≥2) | Tiles beyond this distance are not uploaded or generated. |
+| **Max Blade Distance** | `150` (≥2) | Per-blade maximum: farther candidates are rejected on the GPU. |
+| **Frustum Padding Degrees** | `8` (0..20) | Expands the culling frustum to avoid bare side strips during fast camera rotation. |
+| **Enable Depth Occlusion** | `false` | Uses the current opaque camera depth to reject hidden blades before they enter the draw buffers. |
+| **Depth Occlusion Bias** | `0.25` (≥0) | World-space safety margin. Increase it if grass pops at depth edges. |
+| **Depth Occlusion Radius Scale** | `0.8` (0..2) | Scale of the blade sphere used for the depth test. Lower values cull more aggressively. |
+| **Depth Occlusion Sample Radius Pixels** | `2` (0..4) | Cross-sample radius around the blade centre. More samples make silhouette edges safer. |
 
 #### LOD
 
 | Field | Default | Description |
 |---|---|---|
-| **High Lod Distance** | `18` (≥0) | Closer than this distance — the high-LOD mesh (4 segments). |
-| **Lod Blend Band** | `6` (≥0.1) | Width of the cross-fade zone at LOD transitions and at max-distance. Larger = softer, but more overdraw. |
+| **High Lod Distance** | `4.1` (≥0) | Centre of the switch between the high-LOD mesh (4 segments) and low-LOD mesh (1 triangle). |
+| **Lod Blend Band** | `8` (≥0.1) | Width of the stable stochastic transition and the fade near max distance. Each blade is assigned to only one LOD. |
 
 #### Distance Thinning
 
 | Field | Default | Description |
 |---|---|---|
 | **Thinning Start Distance** | `30` (≥0) | From this distance grass starts thinning out. Closer — no thinning; high-LOD is never touched. |
-| **Thinning Strength** | `0` (0..1) | How aggressively it thins toward max-distance. 0 = none; 1 = maximum (almost all far low-LOD blades drop out). |
+| **Thinning Strength** | `1` (0..1) | How aggressively it thins toward max-distance. 0 = none; 1 = maximum (almost all far low-LOD blades drop out). |
 
 #### Clumping noise
 
 | Field | Default | Description |
 |---|---|---|
-| **Clump Scale** | `0.05` | World-space scale of the clump noise. Smaller = larger clumps. |
+| **Clump Scale** | `0` | World-space scale of the clump noise. Smaller = larger clumps; `0` samples one constant point. |
 
 #### Buffer Capacity
 
@@ -271,6 +293,17 @@ Performance and layout settings. Can be shared between several terrains.
 
 ---
 
+## 🔄 Runtime rendering through RenderGraph
+
+`GrassRenderPassFeature` adds two ordered passes after opaque geometry:
+
+1. **Generate pass.** The CPU collects visible terrain tiles and uploads their descriptors. One batched compute dispatch samples the heightmap, mask and noise, rejects candidates by distance/frustum and optionally camera depth, selects one LOD, and appends surviving blades to high/low GPU buffers. A tiny compute kernel then builds indirect draw arguments from the GPU counters — there is no CPU readback.
+2. **Draw pass.** RenderGraph attaches the current camera color and depth targets, then records one indirect forward draw per LOD.
+
+This is better than using `LateUpdate` at runtime because the work belongs to the camera's render frame, runs after opaque depth is available, has explicit color/depth dependencies, and cannot be submitted accidentally for unrelated cameras. It also enables depth occlusion and avoids an out-of-pipeline runtime fallback. The original `LateUpdate` + `Graphics.RenderMeshIndirect` path is preserved only for Edit-mode Scene View preview and is stripped from player builds.
+
+---
+
 ## 🎨 Terrain mask (`Grass Mask`)
 
 An RGBA texture the size of the terrain (or smaller — it stretches over UV). Channels:
@@ -278,7 +311,7 @@ An RGBA texture the size of the terrain (or smaller — it stretches over UV). C
 | Channel | Purpose |
 |---|---|
 | **R** | **Placement / density** (0..1). 0 — no grass; >0 — it grows. The only required channel for basic grass. |
-| **G** | **Height multiplier** (0..1). 1 — full height from `GrassType`; 0 — no grass. At G < 0.5 the folded-blade optimization kicks in. |
+| **G** | **Height multiplier** (0..1). 1 — full height from `GrassType`; 0 — the minimum short-blade height. If the final height is below a non-zero `Fold Height`, the folded-blade optimization is used. Use R, not G, to remove grass. |
 | **B** | **Clamp / clumping** (0..1). OPTIONAL. Where painted — the number of blades growing from one point increases + a small height boost (+25%) and brightness boost (+20%) at the maximum. Average blades per cell: B=0 → 1–2 (base), B=1 → toward `Max Blades Per Cell`. |
 | **A** | Reserved. |
 
@@ -349,26 +382,25 @@ The **Generate Blank Density Mask** button creates an empty mask (R=0 → no gra
 
 ## 🚄 Performance
 
-The default settings target ~100,000 visible blades across a 30-meter panorama.
-
-**Reference figures:**
-
-- GPU frame on an RTX 3060 — ~1.2 ms on compute + ~0.8 ms on render at 100k blades.
-- On mobile: `Blades Per Tile Axis` → 48–64, `Max Blade Distance` → 25 m.
-- Tall grass (`Base Height` > 1 m) greatly increases overdraw — trim `High Lod Distance` / `Max Blade Distance` first.
+Profile on the target hardware: cost depends heavily on mask coverage, resolution, blade height and depth complexity. The renderer already batches all visible tiles into one compute dispatch, performs cheap rejection before height/noise sampling, builds draw arguments on the GPU, and never reads blade counts back to the CPU.
 
 **Tuning (in descending order of effect):**
 
 1. `Max Blade Distance` ↓
 2. `Blades Per Tile Axis` ↓
-3. `Tile Cull Distance` ↓
-4. `Lod Blend Band` ↓ (less overdraw in the cross-fade zone)
+3. `Thinning Strength` ↑ and/or `Thinning Start Distance` ↓
+4. `Tile Cull Distance` ↓
+5. Enable `Depth Occlusion` when large opaque objects hide substantial grass
+6. Reduce `Base Height`, `Max Blades Per Cell`, and densely painted Clamp (B) areas to lower overdraw/buffer pressure
+
+For mobile, start around `Blades Per Tile Axis = 48–64` and `Max Blade Distance = 25–40`, then measure. Keep buffer capacities close to the maximum population you actually need: capacity reserves GPU memory, while visible survivors determine draw cost.
 
 ---
 
 ## 🛠 Troubleshooting
 
 **Grass does not render at all**
+- Add `Grass Render Pass Feature` to the active Universal Renderer Data and keep RenderGraph enabled. There is no runtime `LateUpdate` fallback.
 - In `GrassTerrain` these are required: Compute Shader, both materials, mask, noise, Type, Settings. If even one field is empty — the component silently skips the frame.
 - The mask is empty by default — **paint the grass** with the Placement brush.
 - `Camera.main` not found → assign `Override Camera` or set the MainCamera tag.
@@ -390,8 +422,7 @@ The default settings target ~100,000 visible blades across a 30-meter panorama.
 - See the [Performance](#-performance) section. The main culprits are `Max Blade Distance` and `Blades Per Tile Axis`.
 
 **No shadows from the grass**
-- In the manual shader the ShadowCasting tag is already set.
-- In the Universal Renderer Asset, check that Cast/Receive Shadows are not disabled globally.
+- The RenderGraph forward pass receives URP lighting and existing scene shadows, but procedural grass is not currently submitted into URP shadow maps. A separate shadow-caster renderer feature would be required for grass to cast shadows.
 
 ---
 
@@ -451,7 +482,7 @@ For the LowLOD graph use `GrassBlade_VertexBillboard` instead of `GrassBlade_Ver
    _Smoothness                 ───────────────────────────────────► Smoothness
    ```
 
-   > `Graphics.RenderMeshIndirect` uses an identity model matrix, so Object Space ≡ World Space — no Transform node is needed.
+   > The procedural indirect draw uses an identity model matrix, so Object Space ≡ World Space — no Transform node is needed.
 
    > **To disable wind:** skip the GrassWind_Apply node and wire `PositionWS` directly to Vertex Position.
 
@@ -474,18 +505,18 @@ For the LowLOD graph use `GrassBlade_VertexBillboard` instead of `GrassBlade_Ver
 
 8. Create a Material from the graph, assign it in `GrassTerrain`. After verifying, `GrassBlade.shader` can be deleted.
 
-ShaderGraph automatically generates the ShadowCaster and DepthOnly passes.
+ShaderGraph may generate ShadowCaster/DepthOnly passes, but the current grass Renderer Feature records only the forward pass. Generated ShadowCaster code alone does not make procedural grass cast into URP shadow maps.
 
 ---
 
-## 🌾 Grass interaction (colliders)
+## 🌾 Grass interaction (sources)
 
-Grass bends away from any moving object — player, cubes, capsules, anything with a collider.
+Grass bends away from explicitly registered moving transforms — player, cubes, capsules, and similar objects. A Unity Collider is not required.
 
 ### Scene setup
 
-1. **Add `GrassInteractionManager`** to any single GameObject in the scene (e.g. the terrain root). It pushes up to **8 sources** to the GPU every `LateUpdate`.
-2. **Add `GrassInteractionSource`** to each object that should push the grass. Set **Radius** to match the object's approximate footprint:
+1. **Add `GrassInteractionSource`** to each object that should push the grass. The default HLSL grass path reads these sources directly during RenderGraph generation; no manager component is required. Up to **8 sources** are processed.
+2. Set **Radius** to match the object's approximate footprint:
 
    | Object type | Suggested Radius |
    |---|---|
@@ -493,11 +524,22 @@ Grass bends away from any moving object — player, cubes, capsules, anything wi
    | Small cube (1×1 m) | `0.7` |
    | Large enemy | `1.0–1.5` |
 
-3. **Adjust `Interaction Strength`** (`_InteractionMaxPush`) on the grass material — this is the maximum tip displacement in metres when a blade is at the exact centre of a source. Default: `0.5 m`.
+3. Keep **Exclude From Depth Occlusion** enabled for the player. Its conservative sphere stops the player's depth from punching a hole in grass behind the character:
 
-> Both components are plain MonoBehaviours; there is no requirement for actual Unity Collider components — just add `GrassInteractionSource` to any moving transform.
+   | Field | Purpose |
+   |---|---|
+   | **Depth Occlusion Center** | Local-space centre of the protected sphere, normally around the torso. |
+   | **Depth Occlusion Radius** | Protected radius; `0` reuses the interaction Radius. |
+
+   Disable the option for props that should genuinely hide grass. To protect an object without bending grass, use `Radius = 0` and a positive `Depth Occlusion Radius`.
+
+4. **Adjust `Interaction Strength`** (`_InteractionMaxPush`) on the grass material — the maximum tip displacement at the source centre. Default: `0.5 m`.
+
+Using explicit sources avoids per-frame physics overlap queries and is cheaper and more precise than discovering player objects through a `LayerMask`.
 
 ### ShaderGraph wiring (if using GrassBladeGraph.hlsl)
+
+Add one `GrassInteractionManager` to the scene when using the ShaderGraph interaction node. It publishes the registered sources as global shader values for that graph; the default HLSL shader does not need it.
 
 Add a **third** Custom Function node: Mode = File, Source = `GrassInteraction.hlsl`, Name = `GrassInteraction_Apply`.
 
@@ -522,11 +564,6 @@ To disable interaction: remove the node and skip the second Add.
 ---
 
 ## 🔌 Extending
-
-**Character interaction (trampling):**
-- In `GrassWind` add `Vector4 _GrassImpactSource` (xyz = world pos, w = radius).
-- In `GrassBlade.shader` / `GrassBladeGraph.hlsl` add a deflection of `blade.position` based on `dist(worldPos, impact)`.
-- From code each frame: `Shader.SetGlobalVector("_GrassImpactSource", ...)`.
 
 **Streaming large worlds (multiple terrains):**
 - `GrassRenderer` — one per terrain. If the world is split into 10×10 terrain tiles → put a `GrassTerrain` on each, they do not interfere with one another.

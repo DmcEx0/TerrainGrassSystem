@@ -1,13 +1,14 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace TerrainGrassSystem
 {
     /// <summary>
-    /// Place one instance anywhere in the scene. It collects all active
-    /// GrassInteractionSource components each frame and pushes their positions
-    /// and radii to the global shader properties read by GrassInteraction.hlsl.
-    /// Up to 8 sources are supported simultaneously.
+    /// Optional bridge for ShaderGraph materials. The default HLSL grass path
+    /// reads registered sources directly during compute generation. When this
+    /// component exists, GrassRenderPassFeature records the same source data as
+    /// global shader properties for GrassInteraction.hlsl graph nodes.
     /// </summary>
     [AddComponentMenu("TerrainGrassSystem/Grass/Grass Interaction Manager")]
     public class GrassInteractionManager : MonoBehaviour
@@ -22,6 +23,7 @@ namespace TerrainGrassSystem
         static readonly int PropInteractionStr  = Shader.PropertyToID("_InteractionStr");
 
         readonly Vector4[] _buffer = new Vector4[MaxSources];
+        static GrassInteractionManager s_ActiveManager;
 
         public static void Register(GrassInteractionSource src)
         {
@@ -69,18 +71,46 @@ namespace TerrainGrassSystem
             return count;
         }
 
-        void LateUpdate()
+        void OnEnable()
+        {
+            if (s_ActiveManager == null) s_ActiveManager = this;
+#if UNITY_EDITOR
+            if (!Application.isPlaying) PushShaderGlobalsImmediate();
+#endif
+        }
+
+        void OnDisable()
+        {
+            if (s_ActiveManager != this) return;
+            s_ActiveManager = null;
+            Shader.SetGlobalInt(PropCount, 0);
+        }
+
+#if UNITY_EDITOR
+        void Update()
+        {
+            if (!Application.isPlaying && s_ActiveManager == this)
+                PushShaderGlobalsImmediate();
+        }
+
+        void PushShaderGlobalsImmediate()
         {
             int count = FillInteractionSources(_buffer);
-            
             Shader.SetGlobalVectorArray(PropSources, _buffer);
             Shader.SetGlobalFloat(PropInteractionStr, _interactionStr);
             Shader.SetGlobalInt(PropCount, count);
         }
+#endif
 
-        void OnDestroy()
+        internal static void PushShaderGlobals(RasterCommandBuffer cmd)
         {
-            Shader.SetGlobalInt(PropCount, 0);
+            var manager = s_ActiveManager;
+            if (manager == null) return;
+
+            int count = FillInteractionSources(manager._buffer);
+            cmd.SetGlobalVectorArray(PropSources, manager._buffer);
+            cmd.SetGlobalFloat(PropInteractionStr, manager._interactionStr);
+            cmd.SetGlobalInt(PropCount, count);
         }
     }
 }

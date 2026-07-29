@@ -11,7 +11,7 @@
 AppendStructuredBuffer<GrassBlade> _BladesHigh;
 AppendStructuredBuffer<GrassBlade> _BladesLow;
 
-// Indirect args layout for Graphics.RenderMeshIndirect — 5 uints per command
+// Indirect indexed-draw args layout — 5 uints per command.
 // (stride 20 bytes). Bind via RWStructuredBuffer<IndirectArgs> so the stride
 // matches the GraphicsBuffer that owns it.
 struct IndirectArgs
@@ -415,10 +415,8 @@ void CSGenerate(uint3 id : SV_DispatchThreadID)
     // so packed patches read as slightly more vibrant than thinned-out ones.
     float3 bladeColor = lerp(gt.baseColor, gt.tipColor, colorSignal) * (1.0 + lushness * 0.20);
 
-    // Cross-fade band. Blades inside the transition band are appended to BOTH
-    // buckets; per-LOD lodBlend factors sum to ~1 so total visible mass is
-    // preserved. All blades in a tuft share the root's distance, so we
-    // precompute these factors once.
+    // Transition band. A stable per-blade roll below routes each blade to one
+    // LOD buffer, keeping the transition soft without rendering both meshes.
     bool inHigh = dist <= highCutoff + halfBand;
     bool inLow  = dist >= highCutoff - halfBand;
     float highBlend = saturate((highCutoff + halfBand - dist) / blendBand);

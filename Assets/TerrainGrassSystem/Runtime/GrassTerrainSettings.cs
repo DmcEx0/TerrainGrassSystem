@@ -2,23 +2,13 @@ using UnityEngine;
 
 namespace TerrainGrassSystem
 {
-    public enum GrassRenderPath
-    {
-        LateUpdate = 0,
-        UniversalRenderPass = 1,
-    }
-
     // Density, tile layout, and LOD distances. Shared between terrains so a
     // project can dial in performance once.
     [CreateAssetMenu(menuName = "TerrainGrassSystem/Grass/Terrain Settings", fileName = "GrassTerrainSettings")]
     public class GrassTerrainSettings : ScriptableObject
     {
-        [Header("Rendering")]
-        [Tooltip("LateUpdate keeps the legacy Graphics.RenderMeshIndirect path. Universal Render Pass renders after opaque depth and can use same-frame depth occlusion.")]
-        public GrassRenderPath RenderPath = GrassRenderPath.LateUpdate;
-
         [Header("Tile Layout")]
-        [Tooltip("Tile size in world meters. Smaller tiles = finer culling but more dispatches per frame.")]
+        [Tooltip("Tile size in world meters. Smaller tiles = finer culling but more CPU tile checks and descriptors.")]
         [Min(2f)] public float TileSize = 10f;
 
         [Tooltip("Number of blades per axis inside one tile. Total blades per tile = N*N. Grid is jittered so it does not look like a lattice.")]
@@ -34,7 +24,7 @@ namespace TerrainGrassSystem
         [Tooltip("Extra perspective-frustum angle generated outside the visible screen. Prevents side bald strips when the camera turns quickly or is finalized after grass culling. 0 = exact frustum.")]
         [Range(0f, 20f)] public float FrustumPaddingDegrees = 8f;
 
-        [Tooltip("Only used by the Universal Render Pass path. Rejects blades hidden behind opaque camera depth before they are appended to the draw buffers.")]
+        [Tooltip("Rejects blades hidden behind opaque camera depth before they are appended to the draw buffers.")]
         public bool EnableDepthOcclusion = false;
 
         [Tooltip("World-space safety bias in meters. Higher values keep more grass near depth edges and reduce popping.")]
@@ -50,7 +40,7 @@ namespace TerrainGrassSystem
         [Tooltip("Blades closer than this are rendered with the high LOD mesh.")]
         [Min(0f)] public float HighLodDistance = 4.1f;
 
-        [Tooltip("Width of the cross-fade band around lod transitions and the max distance. Bigger = softer, more overdraw.")]
+        [Tooltip("Width of the stochastic transition around the LOD boundary and the fade near max distance. Bigger = softer transitions.")]
         [Min(0.1f)] public float LodBlendBand = 8f;
 
         [Header("Distance Thinning")]

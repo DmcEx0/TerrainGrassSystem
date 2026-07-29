@@ -57,7 +57,7 @@ float3 _GrassBladeBezierTangent(float t, float h, float tilt, float bend)
 //   PositionWS   - blade position WITHOUT wind or interaction. Add GrassWind_Apply
 //                  and GrassInteraction_Apply outputs to get the final position.
 //                  Drive Vertex Position with the sum (no Transform node needed —
-//                  model matrix is identity for Graphics.RenderMeshIndirect).
+//                  procedural indirect draw uses an identity model matrix).
 //   NormalWS     - drive Vertex Normal directly.
 //   ColorBase    - blade.color * AO * tipBoost (premixed). Use this OR
 //                  GrassBlade_Masks_float for manual blending.

@@ -3,7 +3,8 @@
 
 #define GRASS_MAX_INTERACTION_SOURCES 8
 
-// Set every frame by GrassInteractionManager.cs via Shader.SetGlobalVectorArray.
+// Recorded by GrassInteractionManager through the grass RenderGraph draw pass
+// (or pushed directly for the editor-only Scene View preview).
 // xyz = world-space centre of the source, w = radius of influence.
 float4 _GrassInteractionSources[GRASS_MAX_INTERACTION_SOURCES];
 int    _GrassInteractionCount;
